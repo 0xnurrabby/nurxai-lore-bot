@@ -188,7 +188,7 @@ this repo:
 
 `--include=dev` matters: `NODE_ENV=production` skips devDependencies and the bot
 runs from `tsx`, which is one. The `npm run check` on the build is a deploy gate —
-it typechecks and runs the 47 offline assertions, so a broken commit cannot ship.
+it typechecks and runs the 49 offline assertions, so a broken commit cannot ship.
 
 Set `HEALTH_PATH` to a random slug and give the same value to the health check
 path:
@@ -204,14 +204,20 @@ check, leaving `PORT` unset is better — the process then opens no listener at 
 
 ```bash
 npm install
-npm run check     # typecheck + 47 offline assertions
+npm run check     # typecheck + 49 offline assertions
 npm start
 ```
 
 On startup it verifies the Telegram token and performs one signed handshake with
 NurXai. A wrong secret, a clock outside the five-minute window, or an unset secret
-on the server is reported immediately and clearly, rather than after you have
-pasted 20,000 characters of research.
+on the server is reported immediately — in the log, and as a Telegram message to
+every operator — rather than after you have pasted 20,000 characters of research.
+
+A failed handshake is **reported, not fatal**. The mistake is almost always on the
+other host — a secret that has not been set there yet is the common case by far —
+so the bot stays up and keeps retrying per command instead of crash-looping over
+another service's configuration. Set the secret there and it starts working with
+no redeploy here.
 
 ---
 
@@ -273,7 +279,7 @@ the side that has to survive a hostile paste.
 | `src/state.ts` | One small JSON file: offset, pending ask, cooldowns |
 | `src/health.ts` | The single inbound path, and why it exists |
 | `src/flow.ts` | The whole conversation |
-| `scripts/selfcheck.ts` | 47 offline assertions over the pure parts |
+| `scripts/selfcheck.ts` | 49 offline assertions over the pure parts |
 
 ---
 

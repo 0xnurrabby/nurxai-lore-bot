@@ -44,6 +44,17 @@ export type ApiResult<T> = { ok: true; data: T } | { ok: false; status: number; 
 const QUEUE_PATH = "/api/lore/queue";
 const WRITE_PATH = "/api/lore";
 
+/**
+ * Errors that mean "the two sides disagree", as opposed to "the network is having
+ * a minute". Only the first kind is worth telling the operator about at startup,
+ * because only the first kind is something anyone can go and fix.
+ */
+export function isSetupError(error: string): boolean {
+  return ["LORE_AGENT_DISABLED", "BAD_SIGNATURE", "STALE_SIGNATURE", "BAD_TIMESTAMP", "SIGNATURE_REQUIRED"].includes(
+    error
+  );
+}
+
 export function signRequest(secret: string, method: string, path: string, timestamp: string, body: string): string {
   const digest = crypto.createHash("sha256").update(body, "utf8").digest("hex");
   return crypto

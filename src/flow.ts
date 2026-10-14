@@ -103,6 +103,14 @@ export class LoreBot {
     for (const id of to ? [to] : this.config.ownerIds) await this.telegram.send(id, text);
   }
 
+  /**
+   * Says something to every operator. For notices where there is no asker to
+   * reply to, like a failed startup handshake.
+   */
+  async notify(text: string): Promise<void> {
+    await this.say(text);
+  }
+
   private async pollLoop(): Promise<void> {
     while (!this.stopped) {
       const updates = await this.telegram.poll(this.state.offset, this.controller.signal);

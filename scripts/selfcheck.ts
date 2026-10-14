@@ -6,6 +6,7 @@ import { buildFreshBrief, buildRefreshBrief, prettifyKey, topicTitle } from "../
 import { coerceRecord, extractJsonObject } from "../src/claude.ts";
 import { loadConfig } from "../src/config.ts";
 import { createHealthHandler } from "../src/health.ts";
+import { isSetupError, signRequest } from "../src/nurxai.ts";
 import type { LoreRecord } from "../src/record.ts";
 import { isUsableRecord } from "../src/record.ts";
 import { emptyState, isOnCooldown, loadState, markAsked, pruneAsked, saveState } from "../src/state.ts";
@@ -433,6 +434,28 @@ check("the default path is not the one the deploy uses", () => {
   // A reminder that HEALTH_PATH is set per deployment; if this ever fails it
   // means someone hardcoded it.
   assert.notEqual(HEALTH_PATH, "/up");
+});
+
+// ── The handshake ────────────────────────────────────────────────────────────
+
+check("a setup error is told apart from a transient one", () => {
+  for (const code of ["LORE_AGENT_DISABLED", "BAD_SIGNATURE", "STALE_SIGNATURE", "BAD_TIMESTAMP", "SIGNATURE_REQUIRED"]) {
+    assert.equal(isSetupError(code), true, code);
+  }
+  for (const code of ["UNREACHABLE", "HTTP_500", "HTTP_429", "NOT_FOUND", ""]) {
+    assert.equal(isSetupError(code), false, code);
+  }
+});
+
+check("the signature is stable and covers method, path and body", () => {
+  const secret = "s".repeat(40);
+  const base = signRequest(secret, "GET", "/api/lore/queue", "1700000000000", "");
+  assert.equal(base, signRequest(secret, "GET", "/api/lore/queue", "1700000000000", ""));
+  assert.notEqual(base, signRequest(secret, "POST", "/api/lore/queue", "1700000000000", ""));
+  assert.notEqual(base, signRequest(secret, "GET", "/api/lore", "1700000000000", ""));
+  assert.notEqual(base, signRequest(secret, "GET", "/api/lore/queue", "1700000000001", ""));
+  assert.notEqual(base, signRequest("t".repeat(40), "GET", "/api/lore/queue", "1700000000000", ""));
+  assert.equal(base.length, 64);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

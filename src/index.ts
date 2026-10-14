@@ -1,6 +1,6 @@
 import { loadConfig, log, warn } from "./config.ts";
 import { Telegram } from "./telegram.ts";
-import { NurxaiClient } from "./nurxai.ts";
+import { NurxaiClient, isSetupError } from "./nurxai.ts";
 import { LoreBot } from "./flow.ts";
 import { startHealthServer, type HealthServer } from "./health.ts";
 
@@ -23,22 +23,31 @@ async function main(): Promise<void> {
   // Handshake before polling. A bad secret or a closed endpoint is a setup
   // mistake, and finding it now costs one request while finding it after the
   // operator has pasted 20,000 characters of research costs their afternoon.
+  //
+  // It is reported, not fatal. The mistake is almost always on the *other* host
+  // — a secret that has not been set there yet is the common case by far — and
+  // dying over another service's configuration would mean a red deploy, a crash
+  // loop, and a redeploy needed here before a fix over there could take effect.
+  // Staying up means the fix is one edit over there and nothing here.
+  let handshakeNotice: string | null = null;
   const probe = await nurxai.queue();
-  if (!probe.ok) {
-    const fatal = ["LORE_AGENT_DISABLED", "BAD_SIGNATURE", "STALE_SIGNATURE", "BAD_TIMESTAMP", "SIGNATURE_REQUIRED"];
-    if (fatal.includes(probe.error)) {
-      throw new Error(
-        `the NurXai handshake failed (${probe.error}).\n` +
-          `  - LORE_AGENT_SECRET here and on ${config.baseUrl} must be the same value, at least 32 characters\n` +
-          `  - ${config.baseUrl} must have LORE_AGENT_SECRET set at all — without it the endpoints answer 503`
-      );
-    }
-    warn("[bot] NurXai did not answer the handshake:", probe.error, "— starting anyway, commands will report it");
-  } else {
+  if (probe.ok) {
     log(`[bot] NurXai reachable, ${probe.data.topics.length} topic(s) waiting`);
+  } else if (isSetupError(probe.error)) {
+    handshakeNotice =
+      `NurXai refused me: ${probe.error}.\n\n` +
+      `Both sides need the same LORE_AGENT_SECRET, at least 32 characters:\n` +
+      `  - here, in this service's environment\n` +
+      `  - on ${config.baseUrl}, or its lore endpoints answer 503 and nothing can reach them\n\n` +
+      `Everything else is running. Fix the secret there and this starts working — ` +
+      `no redeploy here is needed.`;
+    warn("[bot] NurXai rejected the handshake:", probe.error, "— running anyway, commands will report it");
+  } else {
+    warn("[bot] NurXai did not answer the handshake:", probe.error, "— starting anyway, commands will report it");
   }
 
   const bot = new LoreBot(config, telegram, nurxai);
+  if (handshakeNotice) await bot.notify(handshakeNotice);
 
   const shutdown = (signal: string) => {
     log(`[bot] ${signal} received, stopping`);
