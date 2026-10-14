@@ -285,6 +285,11 @@ the side that has to survive a hostile paste.
 
 ## Known limits
 
+- **A deploy logs a few 409s.** Render starts the new instance before stopping the
+  old one, so for about ten seconds two processes long-poll Telegram and Telegram
+  rejects both (`terminated by other getUpdates request`). It stops on its own when
+  the old instance is killed, and nothing is lost — the drain at startup means the
+  survivor does not replay what the other one consumed.
 - **The state file is ephemeral on a free host.** Render's filesystem does not
   survive a deploy, so `offset`, the pending ask and the cooldowns reset. Losing
   the offset is handled (`latestUpdateId()` skips the backlog rather than
