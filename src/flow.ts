@@ -3,6 +3,7 @@ import { log, warn } from "./config.ts";
 import type { Telegram, TelegramMessage } from "./telegram.ts";
 import { describeSender, noteIgnored } from "./telegram.ts";
 import type { NurxaiClient, QueueTopic } from "./nurxai.ts";
+import { isSetupError } from "./nurxai.ts";
 import { buildBrief, topicTitle } from "./brief.ts";
 import { parseDocument } from "./claude.ts";
 import { isUsableRecord } from "./record.ts";
@@ -158,7 +159,7 @@ export class LoreBot {
       case "/help":
         return void this.say(HELP, chat);
       case "/status":
-        return void this.say(this.statusText(), chat);
+        return void this.say(await this.statusText(), chat);
       case "/skip": {
         if (!this.state.pending) return void this.say("Nothing is pending.", chat);
         const dropped = this.state.pending;
@@ -195,13 +196,24 @@ export class LoreBot {
     return void this.file(raw, chat);
   }
 
-  private statusText(): string {
+  private async statusText(): Promise<string> {
     const pending = this.state.pending;
     const now = Date.now();
     const onCooldown = Object.keys(this.state.asked).filter((key) =>
       isOnCooldown(this.state, key, this.config.askCooldownMs, now)
     ).length;
+
+    // Checked live rather than remembered. The state that matters lives on the
+    // other host and can change without this process restarting, which is the
+    // whole reason a failed startup handshake is not fatal — so /status has to
+    // ask, or it would report a stale answer to the one question it exists for.
+    const queue = await this.nurxai.queue();
+    const link = queue.ok
+      ? `reachable, ${queue.data.topics.length} topic(s) waiting`
+      : `${queue.error}${isSetupError(queue.error) ? " — set the same secret on both sides" : ""}`;
+
     const lines = [
+      `NurXai: ${link}`,
       `pending: ${pending ? topicTitle(topicOf(pending)) : "none"}`,
       `automatic asking: ${
         this.state.paused ? "paused" : this.config.autoAsk ? `every ${Math.round(this.config.pollIntervalMs / 60000)}m` : "off"

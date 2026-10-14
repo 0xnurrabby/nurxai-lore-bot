@@ -35,7 +35,15 @@ export class Telegram {
     });
     const body = (await res.json().catch(() => null)) as any;
     if (!res.ok || !body?.ok) {
-      warn("[telegram]", method, "failed", res.status, body?.description || "");
+      const description: string = body?.description || "";
+      if (method === "sendMessage" && /chat not found/i.test(description)) {
+        // The most common first-run failure, and the 400 explains none of it. A
+        // bot cannot open a conversation: until the account presses Start on it
+        // there is no chat to deliver to, and no amount of retrying changes that.
+        warn("[telegram] chat not found — that account has never pressed Start on this bot");
+      } else {
+        warn("[telegram]", method, "failed", res.status, description);
+      }
       return null;
     }
     return body.result as T;
