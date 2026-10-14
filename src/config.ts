@@ -31,6 +31,8 @@ export type Config = {
   askCooldownMs: number;
   minMisses: number;
   pollIntervalMs: number;
+  /** How long a collecting paste waits for its next part before filing. */
+  pasteQuietMs: number;
 };
 
 function loadDotEnv(): void {
@@ -154,7 +156,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     autoAsk: bool(env, "LORE_AUTO_ASK", true),
     askCooldownMs: num(env, "LORE_ASK_COOLDOWN_HOURS", 24) * 60 * 60 * 1000,
     minMisses: Math.max(1, Math.round(num(env, "LORE_MIN_MISSES", 2))),
-    pollIntervalMs: Math.max(5, num(env, "LORE_POLL_INTERVAL_MINUTES", 30)) * 60 * 1000
+    pollIntervalMs: Math.max(5, num(env, "LORE_POLL_INTERVAL_MINUTES", 30)) * 60 * 1000,
+    // A paste that arrives in parts arrives in parts within a second or two of
+    // each other, so this only has to outlast the operator's own copy-paste. Too
+    // short and a slow paste is filed half-complete; too long and every single
+    // -message paste waits for a bell that will never ring.
+    pasteQuietMs: Math.max(3, num(env, "LORE_PASTE_QUIET_SECONDS", 10)) * 1000
   };
 }
 

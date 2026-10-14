@@ -5,11 +5,23 @@ import path from "node:path";
 import { buildFreshBrief, buildRefreshBrief, prettifyKey, topicTitle } from "../src/brief.ts";
 import { coerceRecord, extractJsonObject } from "../src/claude.ts";
 import { loadConfig } from "../src/config.ts";
+import { joinParts } from "../src/flow.ts";
 import { createHealthHandler } from "../src/health.ts";
 import { isSetupError, signRequest } from "../src/nurxai.ts";
 import type { LoreRecord } from "../src/record.ts";
 import { isUsableRecord } from "../src/record.ts";
-import { emptyState, isOnCooldown, loadState, markAsked, pruneAsked, saveState } from "../src/state.ts";
+import {
+  type State,
+  briefMessageKey,
+  emptyState,
+  isOnCooldown,
+  loadState,
+  markAsked,
+  pruneAsked,
+  pruneBriefs,
+  rememberBrief,
+  saveState
+} from "../src/state.ts";
 import { splitMessage, toHtml } from "../src/telegram.ts";
 
 // Everything here is pure: no network, no Telegram, no NurXai, no model. The
@@ -456,6 +468,101 @@ check("the signature is stable and covers method, path and body", () => {
   assert.notEqual(base, signRequest(secret, "GET", "/api/lore/queue", "1700000000001", ""));
   assert.notEqual(base, signRequest("t".repeat(40), "GET", "/api/lore/queue", "1700000000000", ""));
   assert.equal(base.length, 64);
+});
+
+// ── A paste that arrives in pieces ───────────────────────────────────────────
+
+check("the first piece is the document", () => {
+  assert.equal(joinParts("", "NAME\nAerodrome"), "NAME\nAerodrome");
+});
+
+check("a piece after the first is added on a new line", () => {
+  assert.equal(joinParts("WHAT IT IS", "A DEX on Base"), "WHAT IT IS\nA DEX on Base");
+});
+
+check("a boundary that already has a break does not gain a blank line", () => {
+  assert.equal(joinParts("WHAT IT IS\n", "A DEX"), "WHAT IT IS\nA DEX");
+  assert.equal(joinParts("WHAT IT IS", "\nA DEX"), "WHAT IT IS\nA DEX");
+  assert.equal(joinParts("WHAT IT IS\n", "\nA DEX"), "WHAT IT IS\n\nA DEX");
+});
+
+check("a heading survives being split across two messages", () => {
+  // The case that matters: a hand split at a heading boundary must not weld the
+  // heading onto the field below it.
+  const joined = joinParts("SOURCE\n", "SEARCH X");
+  assert.equal(joined.split("\n")[0], "SOURCE");
+  assert.equal(joined.split("\n")[1], "SEARCH X");
+});
+
+check("a paste split into five pieces reassembles to the original lines", () => {
+  const pieces = ["NAME", "Aerodrome", "WHAT IT IS", "A DEX on Base", "SOURCES"];
+  const body = pieces.reduce((acc, piece) => joinParts(acc, `${piece}\n`), "");
+  assert.deepEqual(body.trimEnd().split("\n"), pieces);
+});
+
+// ── Binding a paste to the prompt it answers ─────────────────────────────────
+
+function briefOf(key: string, askedAt = Date.now()) {
+  return { key, label: key, reason: "no_lore" as const, askedAt };
+}
+
+check("every message a brief was sent in resolves back to that brief", () => {
+  const state = emptyState();
+  const ask = { key: "x-aerodrome", label: "Aerodrome", reason: "no_lore" as const, askedAt: 1000 };
+  rememberBrief(state, 555, [10, 11, 12], ask);
+  for (const id of [10, 11, 12]) {
+    const bound = state.briefs[briefMessageKey(555, id)];
+    assert.equal(bound?.key, "x-aerodrome", String(id));
+  }
+});
+
+check("a message id means different things in different chats", () => {
+  // Telegram numbers messages per chat, so keying on the id alone would let one
+  // operator's reply resolve another operator's brief.
+  const state = emptyState();
+  rememberBrief(state, 111, [7], { key: "x-base", label: "Base", reason: "stale", askedAt: 1000 });
+  rememberBrief(state, 222, [7], { key: "x-fishaudio", label: "Fish Audio", reason: "no_lore", askedAt: 1001 });
+  assert.equal(state.briefs[briefMessageKey(111, 7)]?.key, "x-base");
+  assert.equal(state.briefs[briefMessageKey(222, 7)]?.key, "x-fishaudio");
+  assert.equal(state.briefs[briefMessageKey(333, 7)], undefined);
+});
+
+check("an old prompt stays answerable", () => {
+  const state = emptyState();
+  const week = 7 * 24 * 60 * 60 * 1000;
+  rememberBrief(state, 1, [1], { key: "x-old", label: "Old", reason: "no_lore", askedAt: 1000 });
+  const kept = pruneBriefs(state.briefs, 1000 + week - 60_000);
+  assert.equal(kept[briefMessageKey(1, 1)]?.key, "x-old");
+});
+
+check("a prompt nobody answered for a fortnight is forgotten", () => {
+  const state = emptyState();
+  const week = 7 * 24 * 60 * 60 * 1000;
+  rememberBrief(state, 1, [1], { key: "x-old", label: "Old", reason: "no_lore", askedAt: 1000 });
+  assert.deepEqual(pruneBriefs(state.briefs, 1000 + 2 * week), {});
+});
+
+check("the brief map is capped, and drops the oldest", () => {
+  const briefs: State["briefs"] = {};
+  for (let i = 0; i < 260; i++) briefs[`1:${i}`] = briefOf(`k${i}`, 1000 + i);
+  const kept = pruneBriefs(briefs, 2000);
+  const keys = Object.keys(kept);
+  assert.equal(keys.length, 200);
+  assert.equal(kept["1:259"]?.key, "k259", "the newest survives");
+  assert.equal(kept["1:0"], undefined, "the oldest is gone");
+});
+
+check("a brief map that survives a save and load still resolves", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lore-state-"));
+  const file = path.join(dir, "state.json");
+  const state = emptyState();
+  // A real timestamp: the TTL is measured against the wall clock, and a fake one
+  // from 1970 is (correctly) pruned the moment it is written.
+  rememberBrief(state, 9, [42], { key: "x-base", label: "Base", reason: "stale", askedAt: Date.now() });
+  saveState(file, state);
+  const reloaded = loadState(file);
+  assert.equal(reloaded.briefs[briefMessageKey(9, 42)]?.key, "x-base");
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

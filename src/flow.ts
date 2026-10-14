@@ -7,40 +7,85 @@ import { isSetupError } from "./nurxai.ts";
 import { buildBrief, topicTitle } from "./brief.ts";
 import { parseDocument } from "./claude.ts";
 import { isUsableRecord } from "./record.ts";
-import { type PendingAsk, type State, isOnCooldown, loadState, markAsked, saveState } from "./state.ts";
+import {
+  type PendingAsk,
+  type State,
+  briefMessageKey,
+  isOnCooldown,
+  loadState,
+  markAsked,
+  rememberBrief,
+  saveState
+} from "./state.ts";
 
 // The whole conversation, in one place.
 //
-// The design constraint is that a paste must never be ambiguous. Only one brief
-// is ever outstanding: `state.pending` holds it, `/skip` clears it, and a paste
-// is always filed against exactly that topic. Anything else — a queue of open
-// questions, a topic chosen by a reply — is a way to file the wrong research
-// against the wrong subject and never notice.
+// Two rules make a hand-run workflow survive contact with a real chat window.
 //
-// The allowlist is a set, not a single name. Two accounts belonging to the same
-// operator is the normal case, and it does not weaken anything: the pending brief
-// is still singular, so a second operator can read it, ask for it, or file it,
-// but two people pasting two documents into one open question is not possible.
+// 1. A paste is bound to the prompt it answers, not to "whatever is pending".
+//    Telegram's reply carries the id of the message being replied to, and every
+//    message this bot sends for a brief is recorded against that brief — so a
+//    prompt from last week can be answered today and still file against the right
+//    subject. The single pending ask is the fallback for a paste sent bare.
+//
+// 2. A paste can arrive in pieces. Telegram refuses anything over 4096
+//    characters, and a real answer to the research brief is 5,000–20,000, so the
+//    operator sends it as several messages whether or not anyone planned for it.
+//    The bot collects them and files once the pieces stop coming.
 
 const HELP = `NurXai lore bot
 
 NurXai writes replies. When it keeps meeting a topic it knows nothing about,
 it says so — and I bring that topic here.
 
+To file lore, reply to a brief with the answer as plain text. If it comes back
+in several messages, send them all — I keep collecting until they stop, then
+file. /done files immediately.
+
 /next     the next research brief
 /queue    what is waiting, and how often it came up
-/status   what is pending
+/status   what is pending, and whether NurXai is reachable
+/done     file what I have collected now
+/cancel   throw away what I have collected
 /skip     drop the pending brief
 /pause    stop asking automatically
-/resume   start asking again
+/resume   start asking again`;
 
-To file lore: paste a brief's answer back here as plain text.`;
+/** A paste being collected, before it is worth parsing. */
+type Collecting = {
+  key: string;
+  label: string;
+  reason: "no_lore" | "stale";
+  chat: number;
+  body: string;
+  parts: number;
+  /** The one "collecting…" message, edited as parts arrive. */
+  noticeId: number | null;
+  timer: NodeJS.Timeout | null;
+};
+
+/**
+ * Joins one more piece of a paste onto what is already collected.
+ *
+ * A newline, not a glue. Telegram splits at exactly 4096 characters, which lands
+ * mid-word — but a person splitting it by hand lands on a line ending, and gluing
+ * a consumed line ending back together is what destroys a heading like
+ * `WHAT IT IS`. A spurious break inside a word costs nothing; a consumed heading
+ * costs the field. A boundary that already has whitespace is left alone, so the
+ * obvious cases do not pick up a blank line.
+ */
+export function joinParts(body: string, part: string): string {
+  if (!body) return part;
+  if (/\s$/.test(body) || /^\s/.test(part)) return body + part;
+  return `${body}\n${part}`;
+}
 
 export class LoreBot {
   private state: State;
   private stopped = false;
   private controller = new AbortController();
   private timer: NodeJS.Timeout | null = null;
+  private collecting: Collecting | null = null;
 
   constructor(
     private readonly config: Config,
@@ -69,7 +114,8 @@ export class LoreBot {
 
     if (this.state.pending) {
       await this.say(
-        `Still waiting on a paste for ${topicTitle(topicOf(this.state.pending))}.\nSend the answer, or /skip.`
+        `Still waiting on a paste for ${topicTitle(topicOf(this.state.pending))}.\n` +
+          `Reply to the brief with the answer, or /skip.`
       );
     }
 
@@ -84,6 +130,7 @@ export class LoreBot {
     this.stopped = true;
     this.controller.abort();
     if (this.timer) clearTimeout(this.timer);
+    if (this.collecting?.timer) clearTimeout(this.collecting.timer);
     this.persist();
   }
 
@@ -92,22 +139,19 @@ export class LoreBot {
   }
 
   /**
-   * Where a message goes.
+   * Says something to every operator, and reports the message ids it produced.
    *
-   * A command has an asker, so the answer goes back to them and nowhere else —
-   * two operators should not each get a copy of the other's `/status`. An
-   * automatic ask has no asker, so it goes to everyone on the allowlist. Either
-   * way there is still exactly one outstanding brief, so whoever pastes first
-   * files it and the other is simply told nothing is pending.
+   * A command has an asker, so `to` sends the answer back to them and nowhere
+   * else — two operators should not each get a copy of the other's `/status`. An
+   * automatic ask has no asker, so it goes to everyone on the allowlist.
    */
-  private async say(text: string, to?: number): Promise<void> {
-    for (const id of to ? [to] : this.config.ownerIds) await this.telegram.send(id, text);
+  private async say(text: string, to?: number): Promise<number[]> {
+    const ids: number[] = [];
+    for (const id of to ? [to] : this.config.ownerIds) ids.push(...(await this.telegram.send(id, text)));
+    return ids;
   }
 
-  /**
-   * Says something to every operator. For notices where there is no asker to
-   * reply to, like a failed startup handshake.
-   */
+  /** Says something to every operator, for notices with no asker to reply to. */
   async notify(text: string): Promise<void> {
     await this.say(text);
   }
@@ -160,6 +204,21 @@ export class LoreBot {
         return void this.say(HELP, chat);
       case "/status":
         return void this.say(await this.statusText(), chat);
+      case "/done":
+        if (!this.collecting) return void this.say("Nothing collected to file.", chat);
+        return void this.fileCollected("done");
+      case "/cancel": {
+        if (!this.collecting) return void this.say("Nothing collected to throw away.", chat);
+        const dropped = this.collecting;
+        if (dropped.timer) clearTimeout(dropped.timer);
+        this.collecting = null;
+        if (dropped.noticeId) await this.telegram.edit(dropped.chat, dropped.noticeId, "Discarded.");
+        return void this.say(
+          `Threw away ${dropped.body.length.toLocaleString("en-US")} characters for ${dropped.label}. ` +
+            `The brief is still open — paste again, or /skip.`,
+          chat
+        );
+      }
       case "/skip": {
         if (!this.state.pending) return void this.say("Nothing is pending.", chat);
         const dropped = this.state.pending;
@@ -187,13 +246,35 @@ export class LoreBot {
       return void this.say(`Unknown command ${command}. /help`, chat);
     }
 
-    if (!this.state.pending) {
+    // Not a command: a paste, or another piece of one.
+    const target = this.briefFor(message);
+    if (!target) {
       return void this.say(
-        "Nothing is pending, so I do not know which topic that belongs to.\nSend /next for a brief first.",
+        "I do not know which topic that belongs to. Nothing is pending, and this was not a reply to a\n" +
+          "brief I sent — so I would be guessing. Reply to the brief you are answering, or send /next\n" +
+          "for a new one.",
         chat
       );
     }
-    return void this.file(raw, chat);
+    return void this.collectPart(target, raw, chat);
+  }
+
+  /**
+   * Which brief a message answers: the one it was replied to, or the one pending.
+   *
+   * Reply first, because that is the operator telling us directly, and it stays
+   * right even when the prompt is old enough that a newer one has been asked
+   * since. Only fall back to "the pending one" for a paste sent bare.
+   */
+  private briefFor(message: TelegramMessage): PendingAsk | null {
+    const repliedTo = message.reply_to_message?.message_id;
+    if (repliedTo) {
+      const bound = this.state.briefs[briefMessageKey(message.chat.id, repliedTo)];
+      if (bound) {
+        return { key: bound.key, label: bound.label, reason: bound.reason, askedAt: bound.askedAt };
+      }
+    }
+    return this.state.pending;
   }
 
   private async statusText(): Promise<string> {
@@ -215,6 +296,7 @@ export class LoreBot {
     const lines = [
       `NurXai: ${link}`,
       `pending: ${pending ? topicTitle(topicOf(pending)) : "none"}`,
+      `collecting: ${this.collecting ? `${this.collecting.label}, ${this.collecting.parts} part(s), ${this.collecting.body.length} characters` : "nothing"}`,
       `automatic asking: ${
         this.state.paused ? "paused" : this.config.autoAsk ? `every ${Math.round(this.config.pollIntervalMs / 60000)}m` : "off"
       }`,
@@ -254,7 +336,7 @@ export class LoreBot {
 
   private async autoAsk(): Promise<void> {
     if (this.stopped || this.state.paused || !this.config.autoAsk) return;
-    if (this.state.pending) return;
+    if (this.state.pending || this.collecting) return;
     await this.ask(false);
   }
 
@@ -262,6 +344,12 @@ export class LoreBot {
   private async ask(manual: boolean, to?: number): Promise<void> {
     if (this.state.pending) {
       return void this.say(`Still waiting on ${topicTitle(topicOf(this.state.pending))}. Send the answer, or /skip.`, to);
+    }
+    if (this.collecting) {
+      return void this.say(
+        `Still collecting a paste for ${this.collecting.label}. Send /done to file it.`,
+        to
+      );
     }
 
     const topics = await this.fetchQueue(to);
@@ -284,53 +372,147 @@ export class LoreBot {
       askedAt: Date.now()
     };
     markAsked(this.state, ask);
-    this.persist();
 
     const why = chosen.reason === "stale" ? "the record is out of date" : "no lore yet";
     const count = `${chosen.misses} post${chosen.misses === 1 ? "" : "s"} without an answer`;
-    await this.say(
-      `Next: ${topicTitle(chosen)}\n${why} — ${count}.\n\n` +
-        `Paste the brief below into Grok on X, then paste its answer back here.\n/skip to drop it.`,
-      to
-    );
-    await this.say(buildBrief(chosen), to);
+
+    // Sent to each operator separately so the message ids recorded below belong
+    // to the chat they were delivered to.
+    for (const chatId of to ? [to] : this.config.ownerIds) {
+      const headerIds = await this.telegram.send(
+        chatId,
+        `Next: ${topicTitle(chosen)}\n${why} — ${count}.\n\n` +
+          `Paste the brief below into Grok on X, then reply to it here with the answer.\n` +
+          `If it is long, send it in several messages — I collect them.\n/skip to drop it.`
+      );
+      const briefIds = await this.telegram.send(chatId, buildBrief(chosen));
+      rememberBrief(this.state, chatId, [...headerIds, ...briefIds], ask);
+    }
+    this.persist();
     log("[bot] asked", chosen.key, chosen.reason);
   }
 
-  private async file(document: string, to: number): Promise<void> {
-    const pending = this.state.pending;
-    if (!pending) return;
+  /**
+   * Takes one more piece of a paste, and re-arms the bell that ends it.
+   *
+   * One paste at a time: a second document aimed at a different subject while the
+   * first is still open is a mistake worth naming, not a mixture worth guessing
+   * at. See `joinParts` for how the pieces are put back together.
+   */
+  private async collectPart(target: PendingAsk, raw: string, chat: number): Promise<void> {
+    if (this.collecting && this.collecting.key !== target.key) {
+      return void this.say(
+        `Still collecting for ${this.collecting.label} (${this.collecting.parts} part(s)). ` +
+          `Send /done to file it or /cancel to drop it, then start on ${target.label}.`,
+        chat
+      );
+    }
 
+    if (!this.collecting) {
+      this.collecting = {
+        key: target.key,
+        label: target.label,
+        reason: target.reason,
+        chat,
+        body: "",
+        parts: 0,
+        noticeId: null,
+        timer: null
+      };
+    }
+
+    const paste = this.collecting;
+    paste.parts += 1;
+    paste.body = joinParts(paste.body, raw);
+
+    // Re-armed on every piece: the bell rings on silence, not on a schedule.
+    if (paste.timer) clearTimeout(paste.timer);
+    paste.timer = setTimeout(() => {
+      void this.fileCollected("quiet").catch((error) => warn("[bot] auto-file failed", error?.message || "?"));
+    }, this.config.pasteQuietMs);
+
+    await this.showCollecting();
+  }
+
+  private async showCollecting(): Promise<void> {
+    const paste = this.collecting;
+    if (!paste) return;
+    const chars = paste.body.length.toLocaleString("en-US");
+    const seconds = Math.round(this.config.pasteQuietMs / 1000);
+    const text =
+      paste.parts === 1
+        ? `Collecting for ${paste.label} — 1 message, ${chars} characters.\n` +
+          `Send the rest if there is more; I file ${seconds}s after the last one, or send /done now.`
+        : `Collecting for ${paste.label} — ${paste.parts} messages, ${chars} characters.`;
+
+    if (paste.noticeId) {
+      // Editing beats sending: a six-part paste gets one line that counts up
+      // rather than six lines that say nearly the same thing.
+      const edited = await this.telegram.edit(paste.chat, paste.noticeId, text);
+      if (edited) return;
+    }
+    const ids = await this.telegram.send(paste.chat, text);
+    if (ids.length) paste.noticeId = ids[ids.length - 1]!;
+  }
+
+  private async fileCollected(why: "done" | "quiet"): Promise<void> {
+    const paste = this.collecting;
+    if (!paste) return;
+    if (paste.timer) clearTimeout(paste.timer);
+    paste.timer = null;
+
+    const chars = paste.body.length.toLocaleString("en-US");
+    if (paste.noticeId) {
+      await this.telegram.edit(
+        paste.chat,
+        paste.noticeId,
+        `${why === "done" ? "Filing" : "Nothing more arrived — filing"} ${chars} characters for ${paste.label}…`
+      );
+    }
+
+    const filed = await this.file(paste.body, paste.chat, paste.key, paste.reason);
+    if (filed) {
+      // Only now is it safe to forget: a failed parse or a refused write has to
+      // leave the document somewhere, or the operator's paste is gone.
+      this.collecting = null;
+      if (paste.noticeId) await this.telegram.edit(paste.chat, paste.noticeId, `Read ${chars} characters.`);
+    } else {
+      // Kept, and deliberately not re-armed: retrying on a timer would hammer a
+      // failure the operator has not fixed yet.
+      if (paste.noticeId) {
+        await this.telegram.edit(
+          paste.chat,
+          paste.noticeId,
+          `Kept ${chars} characters for ${paste.label}. Send /done to try again, or /cancel to drop it.`
+        );
+      }
+    }
+  }
+
+  /** Files one document against one topic. Returns whether it landed. */
+  private async file(document: string, to: number, key: string, reason: "no_lore" | "stale"): Promise<boolean> {
     await this.telegram.typing(to);
     const outcome = await parseDocument(this.config, document);
     if (!outcome.ok) {
-      await this.say(
-        `Could not use that: ${outcome.reason}.\n\nThe brief is still pending. Paste again, or /skip.`,
-        to
-      );
-      return;
+      await this.say(`Could not use that: ${outcome.reason}.`, to);
+      return false;
     }
 
     const usable = isUsableRecord(outcome.record);
     if (!usable.ok) {
-      await this.say(
-        `Could not use that: ${usable.reason}.\n\nThe brief is still pending. Paste again, or /skip.`,
-        to
-      );
-      return;
+      await this.say(`Could not use that: ${usable.reason}.`, to);
+      return false;
     }
 
-    const written = await this.nurxai.write(pending.key, outcome.record);
+    const written = await this.nurxai.write(key, outcome.record);
     if (!written.ok) {
-      await this.say(
-        `NurXai refused the write: ${written.error}.\n\nThe brief is still pending, so nothing was lost — ` +
-          `fix the cause and paste again, or /skip.`,
-        to
-      );
-      return;
+      await this.say(`NurXai refused the write: ${written.error}.`, to);
+      return false;
     }
 
-    this.state.pending = null;
+    // Cleared only when the paste was answering the ask that is currently open.
+    // Filing an old brief by reply must not silently drop today's question.
+    if (this.state.pending && this.state.pending.key === key) this.state.pending = null;
     this.persist();
 
     const record = outcome.record;
@@ -338,17 +520,18 @@ export class LoreBot {
     await this.say(
       [
         `Filed: ${record.canonicalName}`,
-        `key ${written.data.key}`,
+        `key ${written.data.key}${key === record.canonicalName ? "" : ` (as ${key})`}`,
         `${written.data.created ? "new record" : "record updated"} · good until ${freshness}`,
         `confidence ${written.data.confidence}`,
         `state ${record.currentState.length} · timeline ${record.timeline.length} · team ${record.team.length} · sources ${record.citations.length}` +
           (outcome.truncated ? "\n(the paste was trimmed to 40k characters before parsing)" : ""),
         "",
-        "Every reply NurXai writes about this now reads it."
+        `Every reply NurXai writes about this now reads it${reason === "stale" ? " — and the parts your answer did not mention were left in place" : ""}.`
       ].join("\n"),
       to
     );
     log("[bot] filed", written.data.key, "created:", written.data.created, "confidence:", written.data.confidence);
+    return true;
   }
 }
 

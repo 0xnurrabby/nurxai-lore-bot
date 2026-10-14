@@ -30,7 +30,7 @@ Telegram: "Next: Aerodrome (protocol) — no lore yet, 7 posts without an answer
         │
         │  you paste the brief into Grok on X
         ▼
-you paste Grok's answer back into Telegram
+you reply to that brief with Grok's answer — in one message, or in several
         │
         ▼
 one Claude call restates the document as a fixed-shape record
@@ -45,6 +45,49 @@ every later reply about Aerodrome reads it
 There is no Grok API call anywhere in this project. You run the search in the app
 you already have, which is why the bot needs no xAI credential, costs nothing per
 research and cannot spend money on its own initiative.
+
+---
+
+## The two rules that make it survive a real chat window
+
+A hand-run workflow has exactly two ways to go wrong, and both are designed out.
+
+**A paste is bound to the prompt it answers.** Telegram's reply carries the id of
+the message being replied to, and every message the bot sends for a brief — the
+`Next:` header and the brief itself, one id each — is recorded against that brief
+for seven days. So `Reply to Nur…` is not a nicety: it is the mechanism. Answer a
+prompt from last week by replying to it and it files against last week's subject,
+not today's. A paste sent bare falls back to the single pending brief, and a paste
+with neither is refused rather than guessed at:
+
+> I do not know which topic that belongs to. Nothing is pending, and this was not a
+> reply to a brief I sent — so I would be guessing.
+
+Message ids are numbered per chat, not globally, so the record is keyed
+`<chatId>:<messageId>` — two operators being sent the same brief must not collide
+on whatever id Telegram happened to hand the second chat.
+
+**A paste can arrive in pieces.** Telegram refuses anything over 4,096 characters
+and a real answer to the research brief is 5,000–20,000, so the operator sends it
+as several messages whether or not anyone planned for it. The bot collects them,
+re-arming a quiet timer on every piece, and files once the pieces stop — or
+immediately on `/done`. One live notice counts up as they arrive, rather than one
+line per piece:
+
+```
+Collecting for Base (protocol) — 3 messages, 11,204 characters.
+```
+
+Pieces are joined on a newline, not glued (`joinParts`). Telegram's hard split at
+4,096 lands mid-word, but a person splitting by hand lands on a line ending — and
+gluing a consumed line ending back together is what destroys a heading like
+`WHAT IT IS`. A spurious break inside a word costs nothing; a consumed heading
+costs the field.
+
+Only one paste is collected at a time, and a second document aimed at a different
+subject while the first is open is named rather than mixed in. If a parse or a
+write fails, the collected text is **kept** and the notice says so — it is never
+silently dropped.
 
 ---
 
@@ -188,7 +231,7 @@ this repo:
 
 `--include=dev` matters: `NODE_ENV=production` skips devDependencies and the bot
 runs from `tsx`, which is one. The `npm run check` on the build is a deploy gate —
-it typechecks and runs the 49 offline assertions, so a broken commit cannot ship.
+it typechecks and runs the 60 offline assertions, so a broken commit cannot ship.
 
 Set `HEALTH_PATH` to a random slug and give the same value to the health check
 path:
@@ -204,7 +247,7 @@ check, leaving `PORT` unset is better — the process then opens no listener at 
 
 ```bash
 npm install
-npm run check     # typecheck + 49 offline assertions
+npm run check     # typecheck + 60 offline assertions
 npm start
 ```
 
@@ -276,10 +319,10 @@ the side that has to survive a hostile paste.
 | `src/brief.ts` | The research brief you paste into Grok |
 | `src/claude.ts` | Document → record. The one model call. |
 | `src/record.ts` | The record's shape, and whether it is worth filing |
-| `src/state.ts` | One small JSON file: offset, pending ask, cooldowns |
+| `src/state.ts` | One small JSON file: offset, pending ask, cooldowns, and which message carried which brief |
 | `src/health.ts` | The single inbound path, and why it exists |
 | `src/flow.ts` | The whole conversation |
-| `scripts/selfcheck.ts` | 49 offline assertions over the pure parts |
+| `scripts/selfcheck.ts` | 60 offline assertions over the pure parts |
 
 ---
 
@@ -291,10 +334,13 @@ the side that has to survive a hostile paste.
   the old instance is killed, and nothing is lost — the drain at startup means the
   survivor does not replay what the other one consumed.
 - **The state file is ephemeral on a free host.** Render's filesystem does not
-  survive a deploy, so `offset`, the pending ask and the cooldowns reset. Losing
-  the offset is handled (`latestUpdateId()` skips the backlog rather than
-  replaying it). Losing a pending ask costs one re-ask: the topic is still
-  unanswered, so it comes back after the cooldown. Nothing is filed wrongly.
+  survive a deploy, so `offset`, the pending ask, the cooldowns and the brief map
+  all reset. Losing the offset is handled (`latestUpdateId()` skips the backlog
+  rather than replaying it). Losing the brief map means a reply to an *old* prompt
+  degrades to the pending fallback, and losing a pending ask costs one re-ask. A
+  paste **in flight** when the process dies is lost, because it only ever existed
+  in memory — that is the one case where a redeploy costs an actual paste, so do
+  not push while one is open.
 - **Topics are entity-level.** A project, company, protocol or token. Narrative
   keys (`narr-…`) are not aggregated yet, so one story told across several
   entities is researched per entity.

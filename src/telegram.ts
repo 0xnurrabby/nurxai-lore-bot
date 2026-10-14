@@ -13,6 +13,11 @@ export type TelegramMessage = {
   chat: { id: number };
   from?: { id: number; username?: string; first_name?: string };
   text?: string;
+  /**
+   * Present when the operator used Telegram's swipe-to-reply. This is the whole
+   * mechanism that tells a paste which brief it is answering.
+   */
+  reply_to_message?: { message_id: number };
 };
 
 type TelegramUpdate = { update_id: number; message?: TelegramMessage };
@@ -53,13 +58,19 @@ export class Telegram {
     return this.call<{ id: number; username?: string }>("getMe");
   }
 
-  async send(chatId: number, text: string, options: { html?: boolean; silent?: boolean } = {}): Promise<boolean> {
-    // Telegram caps a message at 4096 characters. The Grok prompt is the only
-    // thing that could approach it, and a silently truncated prompt would send
-    // the operator off to research the wrong question, so this splits rather than
-    // truncates.
+  /**
+   * Sends a message, splitting it if it is longer than Telegram allows.
+   *
+   * Returns the id of every message it produced, because those ids are what a
+   * reply can point at later. An empty array means nothing was delivered — which
+   * is how "chat not found" reaches the caller.
+   */
+  async send(chatId: number, text: string, options: { html?: boolean; silent?: boolean } = {}): Promise<number[]> {
+    // Telegram caps a message at 4096 characters. The returned paste is what
+    // reaches this limit; the briefs this bot sends are 1,600–2,800, so in
+    // practice only an outsider's long answer is ever split here.
     const chunks = splitMessage(text, 4000);
-    let ok = true;
+    const ids: number[] = [];
     for (const chunk of chunks) {
       const result = await this.call<TelegramMessage>("sendMessage", {
         chat_id: chatId,
@@ -68,9 +79,25 @@ export class Telegram {
         disable_web_page_preview: true,
         ...(options.silent ? { disable_notification: true } : {})
       });
-      if (!result) ok = false;
+      if (result?.message_id) ids.push(result.message_id);
     }
-    return ok;
+    return ids;
+  }
+
+  /**
+   * Replaces the text of a message this bot sent.
+   *
+   * Used for the collecting notice, so a paste arriving in six parts produces one
+   * line that counts up instead of six lines saying almost the same thing.
+   */
+  async edit(chatId: number, messageId: number, text: string): Promise<boolean> {
+    const result = await this.call<TelegramMessage>("editMessageText", {
+      chat_id: chatId,
+      message_id: messageId,
+      text,
+      disable_web_page_preview: true
+    });
+    return result !== null;
   }
 
   async typing(chatId: number): Promise<void> {

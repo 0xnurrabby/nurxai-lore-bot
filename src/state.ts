@@ -4,12 +4,20 @@ import { warn } from "./config.ts";
 
 // Local state, in one small JSON file.
 //
-// It holds three things and nothing else: where the Telegram poll got to, which
-// topic is waiting for a paste, and when each topic was last asked about. None
-// of it is secret, none of it is a copy of the lore — the lore lives in NurXai
-// and nowhere else.
+// It holds four things and nothing else: where the Telegram poll got to, which
+// topic is waiting for a paste, when each topic was last asked about, and which
+// Telegram message carried which brief. None of it is secret, none of it is a
+// copy of the lore — the lore lives in NurXai and nowhere else.
 
 export type PendingAsk = {
+  key: string;
+  label: string;
+  reason: "no_lore" | "stale";
+  askedAt: number;
+};
+
+/** Which brief a message carried, so a reply to it resolves the topic. */
+export type SentBrief = {
   key: string;
   label: string;
   reason: "no_lore" | "stale";
@@ -25,12 +33,28 @@ export type State = {
   /** key → when we last asked. This is the bot's own cooldown. */
   asked: Record<string, { at: number; reason: string }>;
   paused: boolean;
+  /**
+   * `"<chatId>:<messageId>"` → the brief that message carried.
+   *
+   * Message ids are unique per chat, not globally, so the chat is part of the
+   * key: two operators being sent the same brief would otherwise collide on
+   * whatever id Telegram happened to hand the second chat.
+   *
+   * This is what makes replying to a prompt from three days ago file against the
+   * right topic. Without it the only thing identifying a paste would be "whatever
+   * is pending now", and an old prompt would be answered against today's subject.
+   */
+  briefs: Record<string, SentBrief>;
 };
 
+/** How long a sent prompt stays answerable by reply. */
+const BRIEF_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/** And how many of them we keep, so the file cannot grow without limit. */
+const BRIEF_MAX = 200;
 const ASKED_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 export function emptyState(): State {
-  return { version: 1, offset: 0, pending: null, asked: {}, paused: false };
+  return { version: 1, offset: 0, pending: null, asked: {}, paused: false, briefs: {} };
 }
 
 export function loadState(file: string): State {
@@ -42,7 +66,8 @@ export function loadState(file: string): State {
       offset: typeof raw.offset === "number" && Number.isFinite(raw.offset) ? raw.offset : 0,
       pending: raw.pending && typeof raw.pending.key === "string" ? (raw.pending as PendingAsk) : null,
       asked: raw.asked && typeof raw.asked === "object" ? (raw.asked as State["asked"]) : {},
-      paused: raw.paused === true
+      paused: raw.paused === true,
+      briefs: raw.briefs && typeof raw.briefs === "object" ? (raw.briefs as State["briefs"]) : {}
     };
   } catch (error: any) {
     // A corrupt state file must not stop the bot: the worst case is re-asking a
@@ -55,7 +80,8 @@ export function loadState(file: string): State {
 export function saveState(file: string, state: State): void {
   const trimmed: State = {
     ...state,
-    asked: pruneAsked(state.asked, Date.now())
+    asked: pruneAsked(state.asked, Date.now()),
+    briefs: pruneBriefs(state.briefs, Date.now())
   };
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -75,6 +101,35 @@ export function pruneAsked(asked: State["asked"], now: number): State["asked"] {
     if (entry && now - Number(entry.at) < ASKED_TTL_MS) out[key] = entry;
   }
   return out;
+}
+
+export function pruneBriefs(briefs: State["briefs"], now: number): State["briefs"] {
+  const kept = Object.entries(briefs)
+    .filter(([, brief]) => brief && typeof brief.key === "string" && now - Number(brief.askedAt) < BRIEF_TTL_MS)
+    // Oldest first, then drop from the front: a burst of asking must not push out
+    // the prompt somebody is slowly working through.
+    .sort((a, b) => Number(a[1].askedAt) - Number(b[1].askedAt))
+    .slice(-BRIEF_MAX);
+  return Object.fromEntries(kept);
+}
+
+export function briefMessageKey(chatId: number, messageId: number): string {
+  return `${chatId}:${messageId}`;
+}
+
+/**
+ * Records that these messages carried this brief, so a reply to any of them —
+ * part one of three, the header, a week later — resolves the topic.
+ */
+export function rememberBrief(state: State, chatId: number, messageIds: number[], ask: PendingAsk): void {
+  for (const messageId of messageIds) {
+    state.briefs[briefMessageKey(chatId, messageId)] = {
+      key: ask.key,
+      label: ask.label,
+      reason: ask.reason,
+      askedAt: ask.askedAt
+    };
+  }
 }
 
 export function isOnCooldown(state: State, key: string, cooldownMs: number, now = Date.now()): boolean {
