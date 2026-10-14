@@ -2,10 +2,11 @@ import { log, warn } from "./config.ts";
 
 // A minimal Telegram client.
 //
-// Long polling, not webhooks. That choice is the reason this bot has no inbound
-// port, no public URL and no TLS certificate to get right: it only ever makes
-// outbound HTTPS calls to Telegram, exactly like a desktop client. There is
-// nothing on this host for anything to connect to.
+// Long polling, not webhooks. That choice is why nothing here needs a public
+// URL, a certificate to get right, or a request body anyone can forge: the
+// process only makes outbound HTTPS calls to Telegram, exactly like a desktop
+// client, and a message arrives because we asked for it. The one listener this
+// process does open exists solely to answer a health check — see health.ts.
 
 export type TelegramMessage = {
   message_id: number;

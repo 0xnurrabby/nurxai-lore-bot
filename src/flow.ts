@@ -15,6 +15,11 @@ import { type PendingAsk, type State, isOnCooldown, loadState, markAsked, saveSt
 // is always filed against exactly that topic. Anything else — a queue of open
 // questions, a topic chosen by a reply — is a way to file the wrong research
 // against the wrong subject and never notice.
+//
+// The allowlist is a set, not a single name. Two accounts belonging to the same
+// operator is the normal case, and it does not weaken anything: the pending brief
+// is still singular, so a second operator can read it, ask for it, or file it,
+// but two people pasting two documents into one open question is not possible.
 
 const HELP = `NurXai lore bot
 
@@ -47,7 +52,9 @@ export class LoreBot {
   async run(): Promise<void> {
     const me = await this.telegram.getMe();
     if (!me) throw new Error("Telegram rejected the bot token (getMe failed)");
-    log(`[bot] @${me.username || me.id} online; owner ${this.config.ownerId}; provider ${this.config.provider}`);
+    log(
+      `[bot] @${me.username || me.id} online; owners ${this.config.ownerIds.join(", ")}; provider ${this.config.provider}`
+    );
 
     // Drain before polling. The state file sits on an ephemeral disk, so after a
     // deploy or a sleep the offset is 0 — and replaying a day of commands would
@@ -60,8 +67,7 @@ export class LoreBot {
     }
 
     if (this.state.pending) {
-      await this.telegram.send(
-        this.config.ownerId,
+      await this.say(
         `Still waiting on a paste for ${topicTitle(topicOf(this.state.pending))}.\nSend the answer, or /skip.`
       );
     }
@@ -84,6 +90,19 @@ export class LoreBot {
     saveState(this.config.stateFile, this.state);
   }
 
+  /**
+   * Where a message goes.
+   *
+   * A command has an asker, so the answer goes back to them and nowhere else —
+   * two operators should not each get a copy of the other's `/status`. An
+   * automatic ask has no asker, so it goes to everyone on the allowlist. Either
+   * way there is still exactly one outstanding brief, so whoever pastes first
+   * files it and the other is simply told nothing is pending.
+   */
+  private async say(text: string, to?: number): Promise<void> {
+    for (const id of to ? [to] : this.config.ownerIds) await this.telegram.send(id, text);
+  }
+
   private async pollLoop(): Promise<void> {
     while (!this.stopped) {
       const updates = await this.telegram.poll(this.state.offset, this.controller.signal);
@@ -93,7 +112,7 @@ export class LoreBot {
         this.state.offset = update.update_id + 1;
         const message = update.message;
         if (!message || !message.text) continue;
-        if (message.from?.id !== this.config.ownerId) {
+        if (!this.config.ownerIds.includes(message.from?.id ?? 0)) {
           noteIgnored(message);
           continue;
         }
@@ -101,7 +120,7 @@ export class LoreBot {
           await this.handle(message);
         } catch (error: any) {
           warn("[bot] handler failed", describeSender(message), error?.message || "?");
-          await this.telegram.send(this.config.ownerId, `Something broke: ${error?.message || "unknown error"}`);
+          await this.say(`Something broke: ${error?.message || "unknown error"}`, message.chat.id);
         }
         this.persist();
       }
@@ -122,49 +141,50 @@ export class LoreBot {
   }
 
   private async handle(message: TelegramMessage): Promise<void> {
+    const chat = message.chat.id;
     const raw = (message.text || "").trim();
     const command = raw.startsWith("/") ? raw.split(/[\s@]/)[0]!.toLowerCase() : "";
 
     switch (command) {
       case "/start":
       case "/help":
-        return void this.telegram.send(this.config.ownerId, HELP);
+        return void this.say(HELP, chat);
       case "/status":
-        return void this.telegram.send(this.config.ownerId, this.statusText());
+        return void this.say(this.statusText(), chat);
       case "/skip": {
-        if (!this.state.pending) return void this.telegram.send(this.config.ownerId, "Nothing is pending.");
+        if (!this.state.pending) return void this.say("Nothing is pending.", chat);
         const dropped = this.state.pending;
         this.state.pending = null;
-        return void this.telegram.send(
-          this.config.ownerId,
-          `Dropped ${topicTitle(topicOf(dropped))}. It stays on cooldown, so it will not come straight back.`
+        return void this.say(
+          `Dropped ${topicTitle(topicOf(dropped))}. It stays on cooldown, so it will not come straight back.`,
+          chat
         );
       }
       case "/pause":
         this.state.paused = true;
-        return void this.telegram.send(this.config.ownerId, "Paused. /next still works, /resume restarts it.");
+        return void this.say("Paused. /next still works, /resume restarts it.", chat);
       case "/resume":
         this.state.paused = false;
-        return void this.telegram.send(this.config.ownerId, "Resumed.");
+        return void this.say("Resumed.", chat);
       case "/queue":
-        return void this.showQueue();
+        return void this.showQueue(chat);
       case "/next":
-        return void this.ask(true);
+        return void this.ask(true, chat);
       default:
         break;
     }
 
     if (command) {
-      return void this.telegram.send(this.config.ownerId, `Unknown command ${command}. /help`);
+      return void this.say(`Unknown command ${command}. /help`, chat);
     }
 
     if (!this.state.pending) {
-      return void this.telegram.send(
-        this.config.ownerId,
-        "Nothing is pending, so I do not know which topic that belongs to.\nSend /next for a brief first."
+      return void this.say(
+        "Nothing is pending, so I do not know which topic that belongs to.\nSend /next for a brief first.",
+        chat
       );
     }
-    return void this.file(raw);
+    return void this.file(raw, chat);
   }
 
   private statusText(): string {
@@ -179,36 +199,37 @@ export class LoreBot {
         this.state.paused ? "paused" : this.config.autoAsk ? `every ${Math.round(this.config.pollIntervalMs / 60000)}m` : "off"
       }`,
       `topics on cooldown: ${onCooldown}`,
+      `allowed to talk to me: ${this.config.ownerIds.length}`,
       `state file: ${this.config.stateFile}`
     ];
     return lines.join("\n");
   }
 
-  private async fetchQueue(): Promise<QueueTopic[] | null> {
+  private async fetchQueue(to?: number): Promise<QueueTopic[] | null> {
     const result = await this.nurxai.queue();
     if (!result.ok) {
       const hint =
         result.error === "LORE_AGENT_DISABLED"
           ? "\nNurXai has no LORE_AGENT_SECRET set, so its lore endpoints are closed."
           : "";
-      await this.telegram.send(this.config.ownerId, `Could not read the queue: ${result.error}${hint}`);
+      await this.say(`Could not read the queue: ${result.error}${hint}`, to);
       return null;
     }
     return result.data.topics.filter((topic) => topic.misses >= this.config.minMisses);
   }
 
-  private async showQueue(): Promise<void> {
-    const topics = await this.fetchQueue();
+  private async showQueue(to?: number): Promise<void> {
+    const topics = await this.fetchQueue(to);
     if (!topics) return;
     if (!topics.length) {
-      return void this.telegram.send(this.config.ownerId, "Nothing waiting. Every topic NurXai meets has lore.");
+      return void this.say("Nothing waiting. Every topic NurXai meets has lore.", to);
     }
     const lines = topics.map((topic, index) => {
       const seen = `${topic.misses} post${topic.misses === 1 ? "" : "s"}`;
       const cooldown = isOnCooldown(this.state, topic.key, this.config.askCooldownMs) ? " (on cooldown)" : "";
       return `${index + 1}. ${topicTitle(topic)} — ${topic.reason === "stale" ? "record is stale" : "no lore yet"}, ${seen}${cooldown}`;
     });
-    await this.telegram.send(this.config.ownerId, `Waiting:\n\n${lines.join("\n")}\n\n/next to start on the top one.`);
+    await this.say(`Waiting:\n\n${lines.join("\n")}\n\n/next to start on the top one.`, to);
   }
 
   private async autoAsk(): Promise<void> {
@@ -218,18 +239,15 @@ export class LoreBot {
   }
 
   /** `manual` (from /next) ignores the cooldown; automatic asking respects it. */
-  private async ask(manual: boolean): Promise<void> {
+  private async ask(manual: boolean, to?: number): Promise<void> {
     if (this.state.pending) {
-      return void this.telegram.send(
-        this.config.ownerId,
-        `Still waiting on ${topicTitle(topicOf(this.state.pending))}. Send the answer, or /skip.`
-      );
+      return void this.say(`Still waiting on ${topicTitle(topicOf(this.state.pending))}. Send the answer, or /skip.`, to);
     }
 
-    const topics = await this.fetchQueue();
+    const topics = await this.fetchQueue(to);
     if (!topics) return;
     if (!topics.length) {
-      return void this.telegram.send(this.config.ownerId, "Nothing waiting right now.");
+      return void this.say("Nothing waiting right now.", to);
     }
 
     const chosen =
@@ -250,44 +268,44 @@ export class LoreBot {
 
     const why = chosen.reason === "stale" ? "the record is out of date" : "no lore yet";
     const count = `${chosen.misses} post${chosen.misses === 1 ? "" : "s"} without an answer`;
-    await this.telegram.send(
-      this.config.ownerId,
+    await this.say(
       `Next: ${topicTitle(chosen)}\n${why} — ${count}.\n\n` +
-        `Paste the brief below into Grok on X, then paste its answer back here.\n/skip to drop it.`
+        `Paste the brief below into Grok on X, then paste its answer back here.\n/skip to drop it.`,
+      to
     );
-    await this.telegram.send(this.config.ownerId, buildBrief(chosen));
+    await this.say(buildBrief(chosen), to);
     log("[bot] asked", chosen.key, chosen.reason);
   }
 
-  private async file(document: string): Promise<void> {
+  private async file(document: string, to: number): Promise<void> {
     const pending = this.state.pending;
     if (!pending) return;
 
-    await this.telegram.typing(this.config.ownerId);
+    await this.telegram.typing(to);
     const outcome = await parseDocument(this.config, document);
     if (!outcome.ok) {
-      await this.telegram.send(
-        this.config.ownerId,
-        `Could not use that: ${outcome.reason}.\n\nThe brief is still pending. Paste again, or /skip.`
+      await this.say(
+        `Could not use that: ${outcome.reason}.\n\nThe brief is still pending. Paste again, or /skip.`,
+        to
       );
       return;
     }
 
     const usable = isUsableRecord(outcome.record);
     if (!usable.ok) {
-      await this.telegram.send(
-        this.config.ownerId,
-        `Could not use that: ${usable.reason}.\n\nThe brief is still pending. Paste again, or /skip.`
+      await this.say(
+        `Could not use that: ${usable.reason}.\n\nThe brief is still pending. Paste again, or /skip.`,
+        to
       );
       return;
     }
 
     const written = await this.nurxai.write(pending.key, outcome.record);
     if (!written.ok) {
-      await this.telegram.send(
-        this.config.ownerId,
+      await this.say(
         `NurXai refused the write: ${written.error}.\n\nThe brief is still pending, so nothing was lost — ` +
-          `fix the cause and paste again, or /skip.`
+          `fix the cause and paste again, or /skip.`,
+        to
       );
       return;
     }
@@ -297,8 +315,7 @@ export class LoreBot {
 
     const record = outcome.record;
     const freshness = written.data.freshnessUntil.slice(0, 10);
-    await this.telegram.send(
-      this.config.ownerId,
+    await this.say(
       [
         `Filed: ${record.canonicalName}`,
         `key ${written.data.key}`,
@@ -308,7 +325,8 @@ export class LoreBot {
           (outcome.truncated ? "\n(the paste was trimmed to 40k characters before parsing)" : ""),
         "",
         "Every reply NurXai writes about this now reads it."
-      ].join("\n")
+      ].join("\n"),
+      to
     );
     log("[bot] filed", written.data.key, "created:", written.data.created, "confidence:", written.data.confidence);
   }

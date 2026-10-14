@@ -59,7 +59,7 @@ can reach it is a health check.**
 | Nothing else is reachable | Telegram is reached by **long polling**, so there is no webhook URL to guess and no request body to forge. There is no endpoint that makes the bot do something. |
 | No database credential | Turso is never touched. Two signed HTTP endpoints are the entire surface. |
 | No SQL | There is no query language in this project. Prepared statements live on the NurXai side; here there is a key and an object. |
-| One allowlisted human | `TELEGRAM_OWNER_ID`. Any message from any other id is logged and dropped. The bot refuses to start without it, because a bot with no allowlist is a bot anyone can drive. |
+| One allowlisted set of people | `TELEGRAM_OWNER_ID` — one id or several. Any message from an id that is not on the list is logged and dropped. The bot refuses to start without at least one, because a bot with no allowlist is a bot anyone can drive. |
 | Replay-proof | The signature covers `timestamp.method.path.sha256(body)`, and the window is five minutes. A captured request is useless a minute later, and a signature for the queue endpoint does not work on the write endpoint. |
 | Fail-closed | With `LORE_AGENT_SECRET` unset, NurXai answers `503` on both endpoints. The door does not exist until the key does. |
 | Zero runtime dependencies | `node:`, `fetch`, and `crypto`. Everything that handles a secret or a signature is a file you can read in one sitting. |
@@ -68,6 +68,24 @@ can reach it is a health check.**
 What a leak costs: someone with the bot token can ask *you* for lore. They still
 cannot read or write the database, because they do not have the secret, and the
 secret is not in the token.
+
+---
+
+## More than one person
+
+`TELEGRAM_OWNER_ID` takes one id or several, separated by commas or spaces. That
+is for the ordinary case of one operator with two Telegram accounts, and the rules
+are chosen so two accounts can never corrupt each other's work:
+
+- **A command answers its sender only.** `/status` and `/queue` go back to whoever
+  typed them, so a second account is never notified about the first one's chores.
+- **An automatic ask goes to everyone.** It has no sender — the bot spoke first —
+  so every account on the list sees it.
+- **A paste is filed against the one pending brief, whoever sends it.** There is
+  still exactly one open question, so the second person to paste is told nothing
+  is pending rather than having their document filed against the wrong topic.
+- **Every other id is logged and dropped**, and the bot refuses to start when the
+  list is empty.
 
 ---
 
@@ -96,7 +114,6 @@ poll would die with it. Two things fix that:
 **Why five minutes:** Render idles a free service after fifteen, so anything
 faster than that works; five is the free plan's finest granularity and uses the
 least of your monitor quota. Setting it to one minute gains nothing.
-
 **Why the path is random:** the health URL is the entire inbound surface. With a
 conventional path like `/health`, every scanner on the internet would find it.
 With `HEALTH_PATH` set to a random slug, a scanner gets a 404 on `/` and a 404 on
@@ -147,7 +164,7 @@ cp .env.example .env
 
 ```ini
 TELEGRAM_BOT_TOKEN=123456:ABC...
-TELEGRAM_OWNER_ID=123456789
+TELEGRAM_OWNER_ID=5005957731,7704510926
 NURXAI_BASE_URL=https://nurxai.xyz
 LORE_AGENT_SECRET=<the same value as on NurXai>
 ANTHROPIC_API_KEY=sk-ant-...
@@ -171,7 +188,7 @@ this repo:
 
 `--include=dev` matters: `NODE_ENV=production` skips devDependencies and the bot
 runs from `tsx`, which is one. The `npm run check` on the build is a deploy gate —
-it typechecks and runs the 44 offline assertions, so a broken commit cannot ship.
+it typechecks and runs the 47 offline assertions, so a broken commit cannot ship.
 
 Set `HEALTH_PATH` to a random slug and give the same value to the health check
 path:
@@ -187,7 +204,7 @@ check, leaving `PORT` unset is better — the process then opens no listener at 
 
 ```bash
 npm install
-npm run check     # typecheck + 44 offline assertions
+npm run check     # typecheck + 47 offline assertions
 npm start
 ```
 
@@ -256,7 +273,7 @@ the side that has to survive a hostile paste.
 | `src/state.ts` | One small JSON file: offset, pending ask, cooldowns |
 | `src/health.ts` | The single inbound path, and why it exists |
 | `src/flow.ts` | The whole conversation |
-| `scripts/selfcheck.ts` | 44 offline assertions over the pure parts |
+| `scripts/selfcheck.ts` | 47 offline assertions over the pure parts |
 
 ---
 

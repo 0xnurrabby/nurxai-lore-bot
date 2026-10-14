@@ -307,7 +307,7 @@ function rejects(overrides: Record<string, string>): boolean {
 
 check("a complete environment loads", () => {
   const config = loadConfig(env());
-  assert.equal(config.ownerId, 42);
+  assert.deepEqual(config.ownerIds, [42]);
   assert.equal(config.provider, "anthropic");
   assert.equal(config.baseUrl, "https://nurxai.xyz");
 });
@@ -316,6 +316,22 @@ check("an empty owner allowlist refuses to start", () => {
   assert.equal(rejects({ TELEGRAM_OWNER_ID: "" }), true);
   assert.equal(rejects({ TELEGRAM_OWNER_ID: "zero" }), true);
   assert.equal(rejects({ TELEGRAM_OWNER_ID: "-5" }), true);
+});
+
+check("several operators are allowed, separated by commas or spaces", () => {
+  assert.deepEqual(loadConfig(env({ TELEGRAM_OWNER_ID: "5005957731,7704510926" })).ownerIds, [5005957731, 7704510926]);
+  assert.deepEqual(loadConfig(env({ TELEGRAM_OWNER_ID: "5005957731 7704510926" })).ownerIds, [5005957731, 7704510926]);
+  assert.deepEqual(loadConfig(env({ TELEGRAM_OWNER_ID: "  42 , 43 ,44 " })).ownerIds, [42, 43, 44]);
+});
+
+check("a repeated id collapses instead of being messaged twice", () => {
+  assert.deepEqual(loadConfig(env({ TELEGRAM_OWNER_ID: "42,42,42" })).ownerIds, [42]);
+});
+
+check("one bad id in the list refuses the whole list", () => {
+  assert.equal(rejects({ TELEGRAM_OWNER_ID: "42,notanid" }), true);
+  assert.equal(rejects({ TELEGRAM_OWNER_ID: "42,,43" }), false, "a trailing comma is not a bad id");
+  assert.equal(rejects({ TELEGRAM_OWNER_ID: "42,0" }), true);
 });
 
 check("a missing or short secret refuses to start", () => {

@@ -12,7 +12,10 @@ export type Provider = "anthropic" | "gateway";
 
 export type Config = {
   telegramToken: string;
-  ownerId: number;
+  /** Everyone allowed to talk to this bot. One id or several — a second account
+   *  for the same operator is normal, and it should be a config change rather
+   *  than a code change. */
+  ownerIds: number[];
   baseUrl: string;
   secret: string;
   provider: Provider;
@@ -79,11 +82,23 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (!telegramToken) problems.push("TELEGRAM_BOT_TOKEN is required (from @BotFather)");
 
   const ownerRaw = str(env, "TELEGRAM_OWNER_ID");
-  const ownerId = Number(ownerRaw);
-  if (!ownerRaw) {
+  const ownerTokens = ownerRaw.split(/[\s,;]+/).filter(Boolean);
+  const ownerIds: number[] = [];
+  const badOwners: string[] = [];
+  for (const token of ownerTokens) {
+    const id = Number(token);
+    // A duplicate is the same account written twice, so it collapses rather than
+    // being an error — and collapsing it here is what stops every automatic ask
+    // arriving twice in the same chat.
+    if (!Number.isInteger(id) || id <= 0) badOwners.push(token);
+    else if (!ownerIds.includes(id)) ownerIds.push(id);
+  }
+  if (!ownerTokens.length) {
     problems.push("TELEGRAM_OWNER_ID is required — an empty allowlist is an open bot");
-  } else if (!Number.isInteger(ownerId) || ownerId <= 0) {
-    problems.push("TELEGRAM_OWNER_ID must be a positive integer");
+  } else if (badOwners.length) {
+    problems.push(
+      `TELEGRAM_OWNER_ID must be positive integers (comma or space separated); not a user id: ${badOwners.join(", ")}`
+    );
   }
 
   const secret = str(env, "LORE_AGENT_SECRET");
@@ -125,7 +140,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 
   return {
     telegramToken,
-    ownerId,
+    ownerIds,
     baseUrl,
     secret,
     provider,
