@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { buildFreshBrief, buildRefreshBrief, prettifyKey, topicTitle } from "../src/brief.ts";
 import { coerceRecord, extractJsonObject } from "../src/claude.ts";
+import { loadConfig } from "../src/config.ts";
+import { createHealthHandler } from "../src/health.ts";
 import type { LoreRecord } from "../src/record.ts";
 import { isUsableRecord } from "../src/record.ts";
 import { emptyState, isOnCooldown, loadState, markAsked, pruneAsked, saveState } from "../src/state.ts";
@@ -280,6 +282,141 @@ check("a short message is left exactly as it is", () => {
 
 check("HTML mode escapes the three characters Telegram treats as markup", () => {
   assert.equal(toHtml("a & b < c > d"), "a &amp; b &lt; c &gt; d");
+});
+
+// ── Configuration ────────────────────────────────────────────────────────────
+
+function env(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
+  return {
+    TELEGRAM_BOT_TOKEN: "123456:ABC",
+    TELEGRAM_OWNER_ID: "42",
+    LORE_AGENT_SECRET: "s".repeat(40),
+    ANTHROPIC_API_KEY: "sk-ant-test",
+    ...overrides
+  } as NodeJS.ProcessEnv;
+}
+
+function rejects(overrides: Record<string, string>): boolean {
+  try {
+    loadConfig(env(overrides));
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+check("a complete environment loads", () => {
+  const config = loadConfig(env());
+  assert.equal(config.ownerId, 42);
+  assert.equal(config.provider, "anthropic");
+  assert.equal(config.baseUrl, "https://nurxai.xyz");
+});
+
+check("an empty owner allowlist refuses to start", () => {
+  assert.equal(rejects({ TELEGRAM_OWNER_ID: "" }), true);
+  assert.equal(rejects({ TELEGRAM_OWNER_ID: "zero" }), true);
+  assert.equal(rejects({ TELEGRAM_OWNER_ID: "-5" }), true);
+});
+
+check("a missing or short secret refuses to start", () => {
+  assert.equal(rejects({ LORE_AGENT_SECRET: "" }), true);
+  assert.equal(rejects({ LORE_AGENT_SECRET: "short" }), true);
+});
+
+check("no model credential refuses to start", () => {
+  assert.equal(rejects({ ANTHROPIC_API_KEY: "" }), true);
+});
+
+check("the gateway key is used when there is no anthropic key", () => {
+  const config = loadConfig(env({ ANTHROPIC_API_KEY: "", AI_GATEWAY_API_KEY: "gw-test" }));
+  assert.equal(config.provider, "gateway");
+  assert.equal(config.parserModel, "anthropic/claude-haiku-4.5");
+});
+
+check("a non-https base url is refused — the signature is a header", () => {
+  assert.equal(rejects({ NURXAI_BASE_URL: "http://nurxai.xyz" }), true);
+});
+
+check("PORT defaults to no listener at all", () => {
+  assert.equal(loadConfig(env()).port, 0);
+  assert.equal(loadConfig(env({ PORT: "10000" })).port, 10000);
+  assert.equal(loadConfig(env({ PORT: "nonsense" })).port, 0);
+  assert.equal(loadConfig(env({ PORT: "-1" })).port, 0);
+  assert.equal(loadConfig(env({ PORT: "999999" })).port, 65535);
+});
+
+check("the health path must be a plausible path", () => {
+  assert.equal(loadConfig(env()).healthPath, "/up");
+  assert.equal(loadConfig(env({ HEALTH_PATH: "/up-abc123" })).healthPath, "/up-abc123");
+  assert.equal(rejects({ HEALTH_PATH: "up" }), true);
+  assert.equal(rejects({ HEALTH_PATH: "/has space" }), true);
+});
+
+// ── The inbound surface ──────────────────────────────────────────────────────
+
+type Captured = { status: number; headers: Record<string, string>; body: unknown };
+
+function respond(handler: ReturnType<typeof createHealthHandler>, method: string, url: string): Captured {
+  const captured: Captured = { status: 0, headers: {}, body: undefined };
+  const res = {
+    writeHead(status: number, headers: Record<string, string>) {
+      captured.status = status;
+      Object.assign(captured.headers, headers);
+      return res;
+    },
+    end(body?: unknown) {
+      captured.body = body;
+    }
+  };
+  handler({ method, url } as never, res as never);
+  return captured;
+}
+
+const HEALTH_PATH = "/up-7f3a91c4";
+const health = createHealthHandler(HEALTH_PATH);
+
+check("the health path answers", () => {
+  const res = respond(health, "GET", HEALTH_PATH);
+  assert.equal(res.status, 200);
+  assert.equal(res.body, "ok");
+});
+
+check("HEAD works and carries no body", () => {
+  const res = respond(health, "HEAD", HEALTH_PATH);
+  assert.equal(res.status, 200);
+  assert.equal(res.body, undefined);
+});
+
+check("every other path is a 404 with nothing in it", () => {
+  for (const url of ["/", "/health", "/healthz", "/up", HEALTH_PATH + "/", HEALTH_PATH + "x", "/UP-7F3A91C4"]) {
+    const res = respond(health, "GET", url);
+    assert.equal(res.status, 404, url);
+    assert.equal(res.body, "not found");
+  }
+});
+
+check("only GET and HEAD are answered", () => {
+  for (const method of ["POST", "PUT", "DELETE", "PATCH", "OPTIONS", "TRACE"]) {
+    const res = respond(health, method, HEALTH_PATH);
+    assert.equal(res.status, 404, method);
+  }
+});
+
+check("a query string does not reach the handler's happy path", () => {
+  assert.equal(respond(health, "GET", `${HEALTH_PATH}?x=1`).status, 404);
+});
+
+check("the health response leaks nothing about the bot", () => {
+  const res = respond(health, "GET", HEALTH_PATH);
+  assert.deepEqual(Object.keys(res.headers).sort(), ["cache-control", "content-length", "content-type"]);
+  assert.equal(res.body, "ok");
+  assert.equal(res.headers["cache-control"], "no-store");
+});
+
+check("the default path is not the one the deploy uses", () => {
+  // A reminder that HEALTH_PATH is set per deployment; if this ever fails it
+  // means someone hardcoded it.
+  assert.notEqual(HEALTH_PATH, "/up");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

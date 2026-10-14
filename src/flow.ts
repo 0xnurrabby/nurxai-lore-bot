@@ -49,6 +49,16 @@ export class LoreBot {
     if (!me) throw new Error("Telegram rejected the bot token (getMe failed)");
     log(`[bot] @${me.username || me.id} online; owner ${this.config.ownerId}; provider ${this.config.provider}`);
 
+    // Drain before polling. The state file sits on an ephemeral disk, so after a
+    // deploy or a sleep the offset is 0 — and replaying a day of commands would
+    // re-run `/next` and `/skip` against whatever topic is pending now.
+    const newest = await this.telegram.latestUpdateId();
+    if (newest !== null && newest + 1 > this.state.offset) {
+      this.state.offset = newest + 1;
+      this.persist();
+      log(`[bot] skipped the Telegram backlog up to update ${newest}`);
+    }
+
     if (this.state.pending) {
       await this.telegram.send(
         this.config.ownerId,

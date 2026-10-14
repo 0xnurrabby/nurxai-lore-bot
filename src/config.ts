@@ -20,6 +20,10 @@ export type Config = {
   parserKey: string;
   parserTimeoutMs: number;
   stateFile: string;
+  /** The port the host expects this process to bind. 0 means no HTTP listener at
+   *  all, which is the right default anywhere that does not need a wake-up ping. */
+  port: number;
+  healthPath: string;
   autoAsk: boolean;
   askCooldownMs: number;
   minMisses: number;
@@ -104,6 +108,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     problems.push("NURXAI_BASE_URL must be an https origin — the signature travels in a header");
   }
 
+  // PORT is set by the host. Unset means run with no HTTP listener, which is
+  // what you want on a machine that is not being health-checked.
+  const port = Math.max(0, Math.min(65_535, Math.round(num(env, "PORT", 0))));
+  // The health path is a secret, not a convention: a scanner should get a 404 on
+  // `/` and on `/health` and learn nothing.
+  const rawHealthPath = str(env, "HEALTH_PATH");
+  if (rawHealthPath && !/^\/[A-Za-z0-9._~\-/]{1,120}$/.test(rawHealthPath)) {
+    problems.push("HEALTH_PATH must start with / and contain only URL-safe characters");
+  }
+  const healthPath = rawHealthPath || "/up";
+
   if (problems.length) {
     throw new Error(`Cannot start:\n  - ${problems.join("\n  - ")}`);
   }
@@ -119,6 +134,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     parserKey,
     parserTimeoutMs: num(env, "LORE_PARSER_TIMEOUT_MS", 45_000),
     stateFile: path.resolve(process.cwd(), str(env, "LORE_STATE_FILE") || "state.json"),
+    port,
+    healthPath,
     autoAsk: bool(env, "LORE_AUTO_ASK", true),
     askCooldownMs: num(env, "LORE_ASK_COOLDOWN_HOURS", 24) * 60 * 60 * 1000,
     minMisses: Math.max(1, Math.round(num(env, "LORE_MIN_MISSES", 2))),

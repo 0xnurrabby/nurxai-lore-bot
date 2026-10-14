@@ -50,12 +50,13 @@ research and cannot spend money on its own initiative.
 
 ## The security model
 
-The short version: **this bot cannot read the database, and nothing can reach
-this bot.**
+The short version: **this bot cannot read the database, and the only thing that
+can reach it is a health check.**
 
 | Property | How |
 | --- | --- |
-| No inbound port | Telegram long polling. The process only makes outbound HTTPS calls, so there is no host to scan, no webhook URL to guess and no certificate to get right. |
+| One path, one response | The process listens on one port and answers exactly one URL, chosen by `HEALTH_PATH`. That URL returns the constant `ok` to `GET` and `HEAD`; everything else is a 404. It reads no body, parses no query string, trusts no header, and reports no version, no uptime, no state and no counts. It cannot start, stop, pause, ask or file anything. It exists only so the host can health-check the process. |
+| Nothing else is reachable | Telegram is reached by **long polling**, so there is no webhook URL to guess and no request body to forge. There is no endpoint that makes the bot do something. |
 | No database credential | Turso is never touched. Two signed HTTP endpoints are the entire surface. |
 | No SQL | There is no query language in this project. Prepared statements live on the NurXai side; here there is a key and an object. |
 | One allowlisted human | `TELEGRAM_OWNER_ID`. Any message from any other id is logged and dropped. The bot refuses to start without it, because a bot with no allowlist is a bot anyone can drive. |
@@ -67,6 +68,48 @@ this bot.**
 What a leak costs: someone with the bot token can ask *you* for lore. They still
 cannot read or write the database, because they do not have the secret, and the
 secret is not in the token.
+
+---
+
+## Running it on a free host
+
+Render's free tier only runs **web services**, and it stops an instance after
+fifteen minutes without an HTTP request. A long-polling bot makes no inbound
+requests, so on its own it would be killed every fifteen minutes and the Telegram
+poll would die with it. Two things fix that:
+
+1. `src/health.ts` gives the process a port to bind and a URL to answer, so the
+   host is satisfied that it is alive.
+2. An external ping every five minutes stops Render from idling it out.
+
+### UptimeRobot, exactly
+
+1. Sign in at [uptimerobot.com](https://uptimerobot.com) → **Add New Monitor**.
+2. **Monitor Type:** `HTTP(s)`
+3. **Friendly Name:** `NurXai lore bot`
+4. **URL (or IP):** the full health URL, including the path and the scheme —
+   `https://<your-service>.onrender.com<HEALTH_PATH>`
+   e.g. `https://nurxai-lore-bot.onrender.com/up-7f3a91c4`
+5. **Monitoring Interval:** `5 minutes`
+6. Leave everything else at its default. Save.
+
+**Why five minutes:** Render idles a free service after fifteen, so anything
+faster than that works; five is the free plan's finest granularity and uses the
+least of your monitor quota. Setting it to one minute gains nothing.
+
+**Why the path is random:** the health URL is the entire inbound surface. With a
+conventional path like `/health`, every scanner on the internet would find it.
+With `HEALTH_PATH` set to a random slug, a scanner gets a 404 on `/` and a 404 on
+`/health` and cannot tell this host apart from an empty one.
+
+**Free-tier arithmetic:** keeping one service awake around the clock is about 730
+instance-hours a month against a 750-hour allowance. One service, all month, is
+what the free tier is for — but a *second* always-on free service would eat into
+it.
+
+**If the ping ever stops**, nothing is lost. The bot sleeps, Telegram buffers
+updates for 24 hours, and the next ping wakes it — and `latestUpdateId()` at
+startup skips whatever it missed rather than replaying it.
 
 ---
 
@@ -113,11 +156,38 @@ ANTHROPIC_API_KEY=sk-ant-...
 `AI_GATEWAY_API_KEY` can be used instead of `ANTHROPIC_API_KEY` — the same key
 NurXai already uses. Anthropic wins when both are set.
 
-### 6. Run it
+### 6. Deploying
+
+On Render, create a **Web Service** (the free plan has no background workers) from
+this repo:
+
+| Setting | Value |
+| --- | --- |
+| Environment | `Node` |
+| Build Command | `npm install --include=dev && npm run check` |
+| Start Command | `npm start` |
+| Health Check Path | the same value as `HEALTH_PATH` |
+| Instance Type | `Free` |
+
+`--include=dev` matters: `NODE_ENV=production` skips devDependencies and the bot
+runs from `tsx`, which is one. The `npm run check` on the build is a deploy gate —
+it typechecks and runs the 44 offline assertions, so a broken commit cannot ship.
+
+Set `HEALTH_PATH` to a random slug and give the same value to the health check
+path:
+
+```bash
+node -e "console.log('/up-' + require('crypto').randomBytes(6).toString('hex'))"
+```
+
+`PORT` is set by Render; you do not set it yourself. On a machine with no health
+check, leaving `PORT` unset is better — the process then opens no listener at all.
+
+### 7. Run it locally
 
 ```bash
 npm install
-npm run check     # typecheck + 29 offline assertions
+npm run check     # typecheck + 44 offline assertions
 npm start
 ```
 
@@ -184,13 +254,19 @@ the side that has to survive a hostile paste.
 | `src/claude.ts` | Document → record. The one model call. |
 | `src/record.ts` | The record's shape, and whether it is worth filing |
 | `src/state.ts` | One small JSON file: offset, pending ask, cooldowns |
+| `src/health.ts` | The single inbound path, and why it exists |
 | `src/flow.ts` | The whole conversation |
-| `scripts/selfcheck.ts` | 29 offline assertions over the pure parts |
+| `scripts/selfcheck.ts` | 44 offline assertions over the pure parts |
 
 ---
 
 ## Known limits
 
+- **The state file is ephemeral on a free host.** Render's filesystem does not
+  survive a deploy, so `offset`, the pending ask and the cooldowns reset. Losing
+  the offset is handled (`latestUpdateId()` skips the backlog rather than
+  replaying it). Losing a pending ask costs one re-ask: the topic is still
+  unanswered, so it comes back after the cooldown. Nothing is filed wrongly.
 - **Topics are entity-level.** A project, company, protocol or token. Narrative
   keys (`narr-…`) are not aggregated yet, so one story told across several
   entities is researched per entity.

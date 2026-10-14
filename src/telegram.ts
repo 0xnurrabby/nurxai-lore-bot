@@ -69,6 +69,29 @@ export class Telegram {
   }
 
   /**
+   * The newest update id Telegram is still holding.
+   *
+   * Called once at startup. On the free tier this process is restarted by every
+   * deploy, and the state file sits on an ephemeral filesystem, so the stored
+   * offset is usually 0 on boot. Without draining, the first poll would replay up
+   * to 24 hours of old commands — some already answered, and some (a `/skip`, a
+   * `/next`) that would now land on a different topic.
+   */
+  async latestUpdateId(): Promise<number | null> {
+    try {
+      const res = await fetch(this.url("getUpdates", { offset: "-1", limit: "1", timeout: "0" }));
+      const body = (await res.json().catch(() => null)) as any;
+      if (!res.ok || !body?.ok) return null;
+      const updates = (body.result ?? []) as TelegramUpdate[];
+      if (!updates.length) return null;
+      return Math.max(...updates.map((update) => update.update_id));
+    } catch (error: any) {
+      warn("[telegram] could not drain the backlog", error?.message || "?");
+      return null;
+    }
+  }
+
+  /**
    * One long poll. Returns an empty array on a timeout or a transient failure,
    * because both look the same from here and the caller should simply poll again.
    */
