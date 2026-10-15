@@ -7,7 +7,7 @@ import { coerceRecord, extractJsonObject } from "../src/claude.ts";
 import { loadConfig } from "../src/config.ts";
 import { joinParts } from "../src/flow.ts";
 import { createHealthHandler } from "../src/health.ts";
-import { isSetupError, isAskableTopic, signRequest, type QueueTopic } from "../src/nurxai.ts";
+import { isSetupError, isAskableTopic, preferWithPosts, signRequest, type QueueTopic } from "../src/nurxai.ts";
 import { isUsableQuestion, writeQuestion } from "../src/question.ts";
 import type { LoreRecord } from "../src/record.ts";
 import { isUsableRecord } from "../src/record.ts";
@@ -188,6 +188,15 @@ check("a record with no holes gets the refresh shape", () => {
   assert.ok(brief.includes("refresh"));
   assert.ok(brief.includes("Ethereum L2 built by Coinbase."));
   assert.ok(brief.includes("sotti na"), "it must be asked which parts are dead");
+});
+
+check("a topic we can be specific about is asked before one we cannot", () => {
+  const bare = topicWith({ key: "name-git", label: "Git" });
+  const withPost = topicWith({ key: "x-coinbase", label: "Coinbase", recentPosts: [aPost("agents are live")] });
+  assert.equal(preferWithPosts([bare, withPost])?.key, "x-coinbase");
+  // When nothing has a post, something still has to be asked, or the bot looks dead.
+  assert.equal(preferWithPosts([bare])?.key, "name-git");
+  assert.equal(preferWithPosts([]), null);
 });
 
 // ── The question the operator pastes into Grok ────────────────────────────────

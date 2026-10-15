@@ -3,7 +3,7 @@ import { log, warn } from "./config.ts";
 import type { Telegram, TelegramMessage } from "./telegram.ts";
 import { describeSender, noteIgnored } from "./telegram.ts";
 import type { NurxaiClient, QueueTopic } from "./nurxai.ts";
-import { isAskableTopic, isSetupError } from "./nurxai.ts";
+import { isAskableTopic, isSetupError, preferWithPosts } from "./nurxai.ts";
 import { buildBrief, topicTitle } from "./brief.ts";
 import { parseDocument } from "./claude.ts";
 import { writeQuestion } from "./question.ts";
@@ -331,8 +331,9 @@ export class LoreBot {
       return void this.say("Nothing waiting right now.", to);
     }
 
-    const chosen =
-      topics.find((topic) => manual || !isOnCooldown(this.state, topic.key, this.config.askCooldownMs)) ?? null;
+    const chosen = preferWithPosts(
+      topics.filter((topic) => manual || !isOnCooldown(this.state, topic.key, this.config.askCooldownMs))
+    );
     if (!chosen) {
       log("[bot] every waiting topic is on cooldown");
       return;

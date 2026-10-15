@@ -69,6 +69,19 @@ export function isAskableTopic(topic: Pick<QueueTopic, "key" | "entityType">): b
   return !/^x-[a-z0-9_]+$/i.test(topic.key);
 }
 
+/**
+ * Picks the topic to ask about, preferring one we can actually be specific about.
+ *
+ * A topic with no post on file can only be asked about by name, and a name is not a
+ * question — "Acca, Git niye aktu bolo" is what that produces. So a topic carrying a
+ * recent angle wins over one that is not, and a bare topic is only used when there is
+ * nothing better. That case is real and temporary: post contexts started being
+ * written on the day this arrived, so every topic the queue held beforehand is bare.
+ */
+export function preferWithPosts(topics: QueueTopic[]): QueueTopic | null {
+  return topics.find((topic) => (topic.recentPosts?.length ?? 0) > 0) ?? topics[0] ?? null;
+}
+
 const QUEUE_PATH = "/api/lore/queue";
 const WRITE_PATH = "/api/lore";
 
