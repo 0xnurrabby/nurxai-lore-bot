@@ -109,32 +109,29 @@ check("the question fits in one Telegram message", () => {
   assert.ok(buildRefreshBrief({ ...freshTopic, reason: "stale", knownSummary: "x".repeat(800) }).length < 4000);
 });
 
-check("a topic that is only an account is never asked about", () => {
-  // The whole reason the first live prompt was "Arpit Bhayani": an x-<handle> key
-  // with no entity type means the resolver fell back to the author.
-  assert.equal(isAskableTopic({ key: "x-arpit_bhayani", entityType: null }), false);
-  assert.equal(isAskableTopic({ key: "x-oxyousse_", entityType: null }), false);
-  assert.equal(isAskableTopic({ key: "x-telegram", entityType: null }), false);
-  // A handle the resolver recognised as a real entity is a different thing.
-  assert.equal(isAskableTopic({ key: "x-base", entityType: "protocol" }), true);
-  assert.equal(isAskableTopic({ key: "x-coinbase", entityType: "company" }), true);
-  // And a key that was never an author handle in the first place is fine.
-  assert.equal(isAskableTopic({ key: "token-theo", entityType: "token" }), true);
-  assert.equal(isAskableTopic({ key: "name-muse", entityType: null }), true);
-});
-
-check("a question with nothing to say is never asked", () => {
-  // "Acca, Git niye aktu bolo" — the failure this whole round exists to remove.
+check("a topic is asked about only with something to say and something to call it", () => {
+  const post = [{ author: "someone", postText: "a post about it", createdAt: "" }];
+  const record = "An L2 built by Coinbase.";
+  // Two rules, and a topic has to pass both:
+  //   1. something to be specific about — a record to correct, or a post to quote;
+  //   2. a name that is a subject — a bare x-<handle> is a stranger.
+  // Nothing to say. "Acca, Git niye aktu bolo" is the failure this exists to prevent.
   assert.equal(isAskableTopic({ key: "name-git", entityType: null }), false);
   assert.equal(isAskableTopic({ key: "site-help-x-com", entityType: null }), false);
-  // A post to quote is enough.
-  assert.equal(
-    isAskableTopic({ key: "name-grok", entityType: null, recentPosts: [aPost("Grok 4.8 is out")] }),
-    true
-  );
-  // So is a record to correct.
-  assert.equal(isAskableTopic({ key: "x-base", entityType: null, knownSummary: "An L2." }), true);
-  assert.equal(isAskableTopic({ key: "x-base", entityType: null, knownSummary: "   " }), false);
+  assert.equal(isAskableTopic({ key: "x-base", entityType: "protocol" }), false, "a type is not context");
+  assert.equal(isAskableTopic({ key: "name-git", entityType: null, knownSummary: "   " }), false);
+
+  // Something to say, and a name that is a subject.
+  assert.equal(isAskableTopic({ key: "name-grok", entityType: null, recentPosts: post }), true);
+  assert.equal(isAskableTopic({ key: "name-base", entityType: null, knownSummary: record }), true);
+  assert.equal(isAskableTopic({ key: "x-base", entityType: "protocol", knownSummary: record }), true);
+  assert.equal(isAskableTopic({ key: "token-theo", entityType: "token", recentPosts: post }), true);
+
+  // Something to say, but the name is a person's handle — the first live prompt was
+  // "Arpit Bhayani" because the resolver fell back to the author of the post.
+  assert.equal(isAskableTopic({ key: "x-arpit_bhayani", entityType: null, recentPosts: post }), false);
+  assert.equal(isAskableTopic({ key: "x-oxyousse_", entityType: null, knownSummary: record }), false);
+  assert.equal(isAskableTopic({ key: "x-telegram", entityType: null, recentPosts: post }), false);
 });
 
 // ── What the question is actually about ───────────────────────────────────────

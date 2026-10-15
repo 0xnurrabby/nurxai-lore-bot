@@ -74,7 +74,7 @@ export type ApiResult<T> = { ok: true; data: T } | { ok: false; status: number; 
  * Guards, not fixes. The scoring that decides the subject lives on the NurXai side.
  */
 export function isAskableTopic(
-  topic: Pick<QueueTopic, "key" | "entityType" | "knownSummary" | "recentPosts">
+  topic: Pick<QueueTopic, "key" | "entityType"> & Partial<Pick<QueueTopic, "knownSummary" | "recentPosts">>
 ): boolean {
   if (!(topic.knownSummary ?? "").trim() && !(topic.recentPosts ?? []).length) return false;
   if (topic.entityType) return true;
