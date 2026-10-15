@@ -31,6 +31,8 @@ export type Config = {
   askCooldownMs: number;
   minMisses: number;
   pollIntervalMs: number;
+  /** How long an unanswered question keeps the next one from being asked. */
+  pendingTtlMs: number;
   /** How long a collecting paste waits for its next part before filing. */
   pasteQuietMs: number;
 };
@@ -161,6 +163,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     // service that is awake anyway, and it is the difference between the prompt
     // appearing on its own and the operator pressing /next to make it happen.
     pollIntervalMs: Math.max(1, num(env, "LORE_POLL_INTERVAL_MINUTES", 3)) * 60 * 1000,
+    // An unanswered question stops the next one from arriving, which is deliberate
+    // — a paste is filed against one open question, so two open at once is two
+    // chances to file the wrong document against the wrong subject. But "forever"
+    // is not a policy: the operator saying nothing is much more likely to mean they
+    // were busy than that they want the conversation to end. After this long the
+    // question stops blocking. It is still answerable by reply for a week, so
+    // nothing is lost by moving on.
+    pendingTtlMs: Math.max(0.5, num(env, "LORE_PENDING_TTL_HOURS", 2)) * 60 * 60 * 1000,
     // A paste that arrives in parts arrives in parts within a second or two of
     // each other, so this only has to outlast the operator's own copy-paste. Too
     // short and a slow paste is filed half-complete; too long and every single

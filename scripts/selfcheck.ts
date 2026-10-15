@@ -18,6 +18,7 @@ import {
   isOnCooldown,
   loadState,
   markAsked,
+  pendingHasExpired,
   pruneAsked,
   pruneBriefs,
   rememberBrief,
@@ -197,6 +198,14 @@ check("a topic we can be specific about is asked before one we cannot", () => {
   // When nothing has a post, something still has to be asked, or the bot looks dead.
   assert.equal(preferWithPosts([bare])?.key, "name-git");
   assert.equal(preferWithPosts([]), null);
+});
+
+check("an unanswered question stops blocking, but never stops being answerable", () => {
+  const ask = { key: "x-base", label: "Base", reason: "no_lore" as const, askedAt: 1_000_000 };
+  const ttl = 2 * 60 * 60 * 1000;
+  assert.equal(pendingHasExpired(null, ttl), false);
+  assert.equal(pendingHasExpired(ask, ttl, ask.askedAt + ttl - 1), false, "still holding the queue");
+  assert.equal(pendingHasExpired(ask, ttl, ask.askedAt + ttl), true, "time to move on");
 });
 
 // ── The question the operator pastes into Grok ────────────────────────────────

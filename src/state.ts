@@ -130,6 +130,17 @@ export function rememberBrief(state: State, chatId: number, messageIds: number[]
   }
 }
 
+/**
+ * Whether an open question has waited long enough to stop blocking the next one.
+ *
+ * The clock is the ask's own timestamp, like the cooldown: two clocks for one
+ * decision is two chances to disagree.
+ */
+export function pendingHasExpired(pending: PendingAsk | null, ttlMs: number, now = Date.now()): boolean {
+  if (!pending) return false;
+  return now - Number(pending.askedAt) >= ttlMs;
+}
+
 export function isOnCooldown(state: State, key: string, cooldownMs: number, now = Date.now()): boolean {
   const entry = state.asked[key];
   if (!entry) return false;

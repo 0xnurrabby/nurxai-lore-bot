@@ -15,6 +15,7 @@ import {
   isOnCooldown,
   loadState,
   markAsked,
+  pendingHasExpired,
   rememberBrief,
   saveState
 } from "./state.ts";
@@ -309,7 +310,22 @@ export class LoreBot {
 
   private async autoAsk(): Promise<void> {
     if (this.stopped || !this.config.autoAsk) return;
-    if (this.state.pending || this.collecting) return;
+    if (this.collecting) return;
+    if (this.state.pending) {
+      if (!pendingHasExpired(this.state.pending, this.config.pendingTtlMs)) return;
+      // One ignored question must not end the conversation. The prompt is still
+      // answerable by reply for a week, and the topic keeps its cooldown, so moving
+      // on costs nothing and is the difference between prompts arriving on their
+      // own and nothing arriving at all.
+      log(
+        "[bot] unanswered for",
+        Math.round((Date.now() - this.state.pending.askedAt) / 60000),
+        "minutes, moving on from",
+        this.state.pending.key
+      );
+      this.state.pending = null;
+      this.persist();
+    }
     await this.ask(false);
   }
 
