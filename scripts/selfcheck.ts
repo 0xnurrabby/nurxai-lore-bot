@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildBrief, buildFreshBrief, buildRefreshBrief, postExcerpt, prettifyKey, topicTitle } from "../src/brief.ts";
+import { buildAskHeader, buildBrief, buildFreshBrief, buildRefreshBrief, postExcerpt, prettifyKey, topicTitle } from "../src/brief.ts";
 import { coerceRecord, extractJsonObject } from "../src/claude.ts";
 import { loadConfig } from "../src/config.ts";
 import { joinParts } from "../src/flow.ts";
 import { createHealthHandler } from "../src/health.ts";
-import { isSetupError, isAskableTopic, preferWithPosts, signRequest, type QueueTopic } from "../src/nurxai.ts";
+import { isSetupError, isAskableTopic, isStatusUrl, preferWithPosts, signRequest, type QueueTopic } from "../src/nurxai.ts";
 import { isUsableQuestion, writeQuestion } from "../src/question.ts";
 import type { LoreRecord } from "../src/record.ts";
 import { isUsableRecord } from "../src/record.ts";
@@ -110,8 +110,8 @@ check("the question fits in one Telegram message", () => {
 });
 
 check("a topic is asked about only with something to say and something to call it", () => {
-  const post = [{ author: "someone", postText: "a post about it", createdAt: "" }];
   const record = "An L2 built by Coinbase.";
+  const post = [{ author: "someone", postText: "a post about it", createdAt: "" }];
   // Two rules, and a topic has to pass both:
   //   1. something to be specific about — a record to correct, or a post to quote;
   //   2. a name that is a subject — a bare x-<handle> is a stranger.
@@ -261,6 +261,77 @@ check("a post is excerpted to the part that carries its subject", () => {
   assert.ok(trimmed.length <= 241, String(trimmed.length));
   assert.ok(trimmed.endsWith("…"), "it should show that it was cut");
   assert.equal(postExcerpt("  a\n\nb  "), "a b");
+});
+
+check("the message above the question links to the post it is about", () => {
+  // The operator's own ask: a word they can tap, above the prompt, that opens the
+  // post — because a quote inside a monospace block cannot be opened, and "what is
+  // this actually about" is the question they ask every time.
+  const header = buildAskHeader(
+    topicWith({
+      recentPosts: [
+        {
+          author: "AstroPolo",
+          postText: "Can Elon save Grok 4.8 with the new in house C++ stack",
+          postUrl: "https://x.com/i/status/1234567890",
+          createdAt: ""
+        }
+      ]
+    }),
+    "no lore yet",
+    "2 posts without an answer"
+  );
+  assert.ok(header.includes('href="https://x.com/i/status/1234567890"'), "the post has to be linked");
+  assert.ok(header.includes("@AstroPolo"), "and named");
+  assert.ok(header.includes("Grok 4.8"), "and quoted, so the link says what it opens");
+});
+
+check("a link that is not a post on X is never emitted", () => {
+  // The address starts life as a scraped DOM attribute and ends up as something the
+  // operator taps. Everything that is not exactly a status link is refused.
+  const bad = [
+    "javascript:alert(1)",
+    "https://evil.com/a/status/1",
+    "https://x.com.evil.com/a/status/1",
+    "http://x.com/a/status/1",
+    "https://x.com/a/status/abc",
+    "https://x.com/a/status/1/../../evil",
+    "",
+    "   "
+  ];
+  for (const url of bad) {
+    assert.equal(isStatusUrl(url), false, url);
+    const header = buildAskHeader(
+      topicWith({ recentPosts: [{ author: "a", postText: "b", postUrl: url, createdAt: "" }] }),
+      "no lore yet",
+      "2 posts"
+    );
+    assert.ok(!header.includes("href="), `must not link ${url}`);
+  }
+  assert.equal(isStatusUrl("https://x.com/i/status/123"), true);
+  assert.equal(isStatusUrl("https://twitter.com/someone/status/99"), true);
+});
+
+check("post text cannot inject markup into the header", () => {
+  const header = buildAskHeader(
+    topicWith({
+      recentPosts: [
+        { author: "a<b>", postText: "<b>bold</b> & <script>x</script>", postUrl: "https://x.com/i/status/1", createdAt: "" }
+      ]
+    }),
+    "no lore yet",
+    "2 posts"
+  );
+  assert.ok(!header.includes("<b>"), "the post's own markup must be escaped");
+  assert.ok(header.includes("&lt;b&gt;"));
+  assert.ok(header.includes("&amp;"));
+});
+
+check("a header with nothing to link still reads as one", () => {
+  const header = buildAskHeader(topicWith(), "no lore yet", "2 posts without an answer");
+  assert.ok(!header.includes("<a href"), "no empty link list");
+  assert.ok(header.includes("Coinbase"));
+  assert.ok(header.includes("Copy the question below"));
 });
 
 // ── Pulling JSON out of whatever the model actually said ─────────────────────

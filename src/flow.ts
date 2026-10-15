@@ -4,7 +4,7 @@ import type { Telegram, TelegramMessage } from "./telegram.ts";
 import { describeSender, noteIgnored } from "./telegram.ts";
 import type { NurxaiClient, QueueTopic } from "./nurxai.ts";
 import { isAskableTopic, isSetupError, preferWithPosts } from "./nurxai.ts";
-import { buildBrief, topicTitle } from "./brief.ts";
+import { buildAskHeader, buildBrief, topicTitle } from "./brief.ts";
 import { parseDocument } from "./claude.ts";
 import { writeQuestion } from "./question.ts";
 import { isUsableRecord } from "./record.ts";
@@ -142,7 +142,11 @@ export class LoreBot {
    * else — two operators should not each get a copy of the other's `/status`. An
    * automatic ask has no asker, so it goes to everyone on the allowlist.
    */
-  private async say(text: string, to?: number, options: { pre?: boolean } = {}): Promise<number[]> {
+  private async say(
+    text: string,
+    to?: number,
+    options: { pre?: boolean; html?: boolean; rawHtml?: boolean } = {}
+  ): Promise<number[]> {
     const ids: number[] = [];
     for (const id of to ? [to] : this.config.ownerIds) ids.push(...(await this.telegram.send(id, text, options)));
     return ids;
@@ -370,12 +374,7 @@ export class LoreBot {
     // to the chat they were delivered to.
     const question = await writeQuestion(this.config, chosen);
     for (const chatId of to ? [to] : this.config.ownerIds) {
-      const headerIds = await this.telegram.send(
-        chatId,
-        `${topicTitle(chosen)} — ${why}, ${count}.\n\n` +
-          `Copy the question below into Grok, then reply to this message with its answer.\n` +
-          `If the answer is long, send it as several messages — I collect them. /skip to drop this one.`
-      );
+      const headerIds = await this.telegram.send(chatId, buildAskHeader(chosen, why, count), { rawHtml: true });
       // `pre` gives the answer a monospace block with a copy button, which is the
       // operator's next move and the reason this is not sent as ordinary text.
       const briefIds = await this.telegram.send(chatId, question.text, { pre: true });

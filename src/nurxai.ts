@@ -17,8 +17,22 @@ export type RecentPost = {
   postText: string;
   /** Signal words the post carried that the stored record does not cover. */
   missing?: string[];
+  /** The post's own permalink, when NurXai could read one. */
+  postUrl?: string | null;
   createdAt: string;
 };
+
+/**
+ * Is this the address of a post on X, and nothing else?
+ *
+ * The value starts life as a scraped DOM attribute and ends up as the target of a
+ * link the operator taps, so it is checked on both sides of the wire rather than
+ * trusted on either. Mirrors `isStatusUrl` in NurXai's extract.ts, deliberately:
+ * neither side should be the only one that cares.
+ */
+export function isStatusUrl(value: string | null | undefined): boolean {
+  return /^https:\/\/(?:www\.)?(?:x|twitter)\.com\/[A-Za-z0-9_/.-]*status\/\d{1,25}$/.test((value ?? "").trim());
+}
 
 export type QueueTopic = {
   key: string;

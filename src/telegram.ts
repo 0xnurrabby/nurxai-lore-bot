@@ -68,7 +68,7 @@ export class Telegram {
   async send(
     chatId: number,
     text: string,
-    options: { html?: boolean; pre?: boolean; silent?: boolean } = {}
+    options: { html?: boolean; pre?: boolean; rawHtml?: boolean; silent?: boolean } = {}
   ): Promise<number[]> {
     // Telegram caps a message at 4096 characters. The returned paste is what
     // reaches this limit; the briefs this bot sends are 1,600–2,800, so in
@@ -76,15 +76,24 @@ export class Telegram {
     const chunks = options.pre ? splitMessage(text, 3800) : splitMessage(text, 4000);
     const ids: number[] = [];
     for (const chunk of chunks) {
-      // `pre` renders as a monospace code block with a copy button, which is the
-      // whole point: the operator's next move is to paste this somewhere else.
-      // The tag is added per chunk and the budget is 200 characters smaller for
-      // it, because an unclosed <pre> is rejected outright.
-      const body = options.pre ? `<pre>${toHtml(chunk)}</pre>` : options.html ? toHtml(chunk) : chunk;
+      // Three modes, and the difference is who escapes what:
+      //   rawHtml — the caller built the markup and escaped its own text. Used by the
+      //             ask header, which emits one anchor per post; escaping it here
+      //             would turn the anchors into visible angle brackets.
+      //   pre     — the whole chunk is one monospace block with a copy button, and
+      //             anything inside it is escaped, tags included.
+      //   html    — escape the chunk, keep no structure.
+      const body = options.rawHtml
+        ? chunk
+        : options.pre
+          ? `<pre>${toHtml(chunk)}</pre>`
+          : options.html
+            ? toHtml(chunk)
+            : chunk;
       const result = await this.call<TelegramMessage>("sendMessage", {
         chat_id: chatId,
         text: body,
-        ...(options.pre || options.html ? { parse_mode: "HTML" } : {}),
+        ...(options.pre || options.html || options.rawHtml ? { parse_mode: "HTML" } : {}),
         disable_web_page_preview: true,
         ...(options.silent ? { disable_notification: true } : {})
       });

@@ -1,4 +1,6 @@
+import { toHtml } from "./telegram.ts";
 import type { QueueTopic } from "./nurxai.ts";
+import { isStatusUrl } from "./nurxai.ts";
 
 // The question the operator pastes into Grok on X.
 //
@@ -186,6 +188,43 @@ export function buildBrief(topic: QueueTopic): string {
   if (known && missing.length) return targetedShape(subject, known, missing, context);
   if (known) return refreshShape(subject, known, context);
   return firstShape(subject, context);
+}
+
+/**
+ * The message above the question, with the posts as tappable links.
+ *
+ * The operator asked for this and it is the difference between a question they can
+ * judge and one they have to take on faith: the prompt quotes the post, but a quote
+ * in a monospace block cannot be opened, and "what is this actually about" is the
+ * question they ask every time. Each line is one anchor, so tapping any of it opens
+ * the post itself.
+ *
+ * Returns Telegram HTML, and the caller must send it with `rawHtml` rather than
+ * letting it be escaped. Only `isStatusUrl` links are emitted, and every piece of
+ * post text is escaped before it goes inside the tag.
+ */
+export function buildAskHeader(topic: QueueTopic, why: string, count: string): string {
+  const lines = [`${topicTitle(topic)} — ${why}, ${count}.`];
+
+  const linked = (topic.recentPosts ?? [])
+    .slice(0, 3)
+    .map((post) => ({ post, url: (post.postUrl ?? "").trim() }))
+    .filter((entry) => isStatusUrl(entry.url));
+
+  if (linked.length) {
+    lines.push("");
+    lines.push(linked.length === 1 ? "Jei post ta dekhe jante chai:" : "Jei post gulo dekhe jante chai:");
+    linked.forEach((entry, index) => {
+      const who = entry.post.author ? `@${entry.post.author.replace(/^@/, "")} — ` : "";
+      const label = `${index + 1}. ${who}${postExcerpt(entry.post.postText, 90)}`;
+      lines.push(`<a href="${entry.url}">${toHtml(label)}</a>`);
+    });
+  }
+
+  lines.push("");
+  lines.push("Copy the question below into Grok, then reply to this message with its answer.");
+  lines.push("If the answer is long, send it as several messages — I collect them. /skip to drop this one.");
+  return lines.join("\n");
 }
 
 export function buildFreshBrief(topic: QueueTopic): string {
