@@ -53,18 +53,30 @@ export type WriteResponse = {
 export type ApiResult<T> = { ok: true; data: T } | { ok: false; status: number; error: string };
 
 /**
- * Whether a topic is a subject or just the account that happened to post.
+ * Whether a topic is worth asking the operator about.
  *
- * An `x-<handle>` key with no entity type means the resolver found nothing to
- * call the subject and fell back to the author. That is not a topic — it is a
- * stranger — and NurXai's own rule is that lore is never keyed on an individual
- * author. So the bot refuses to ask about one rather than spending a research on
- * a private person and writing them into the store.
+ * Two refusals, for two different reasons.
  *
- * This is a guard, not a fix. It stops the noise; the scoring that makes an
- * author outrank the subject is on the NurXai side and still needs to change.
+ * A question with nothing to say is the failure this exists to prevent. A topic
+ * with no record and no post can only be named — "Acca, Git niye aktu bolo" — which
+ * a search engine cannot answer and the operator cannot use. So a topic is worth
+ * asking about only when there is something to be specific about: a record to
+ * correct, or a post to quote. A topic that has gone quiet for a day therefore
+ * drops out on its own, which is the intended shape — it comes back when a post
+ * about it arrives again.
+ *
+ * And an `x-<handle>` key with no entity type means the resolver found nothing to
+ * call the subject and fell back to the author of the post. That is a stranger, not
+ * a topic, and NurXai's own rule is that lore is never keyed on an individual
+ * author. A handle that resolved to a real profile is attributed to that profile's
+ * key instead, so what is left as a bare handle really is an unresolved post.
+ *
+ * Guards, not fixes. The scoring that decides the subject lives on the NurXai side.
  */
-export function isAskableTopic(topic: Pick<QueueTopic, "key" | "entityType">): boolean {
+export function isAskableTopic(
+  topic: Pick<QueueTopic, "key" | "entityType" | "knownSummary" | "recentPosts">
+): boolean {
+  if (!(topic.knownSummary ?? "").trim() && !(topic.recentPosts ?? []).length) return false;
   if (topic.entityType) return true;
   return !/^x-[a-z0-9_]+$/i.test(topic.key);
 }

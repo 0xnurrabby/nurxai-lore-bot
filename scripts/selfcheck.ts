@@ -123,6 +123,20 @@ check("a topic that is only an account is never asked about", () => {
   assert.equal(isAskableTopic({ key: "name-muse", entityType: null }), true);
 });
 
+check("a question with nothing to say is never asked", () => {
+  // "Acca, Git niye aktu bolo" — the failure this whole round exists to remove.
+  assert.equal(isAskableTopic({ key: "name-git", entityType: null }), false);
+  assert.equal(isAskableTopic({ key: "site-help-x-com", entityType: null }), false);
+  // A post to quote is enough.
+  assert.equal(
+    isAskableTopic({ key: "name-grok", entityType: null, recentPosts: [aPost("Grok 4.8 is out")] }),
+    true
+  );
+  // So is a record to correct.
+  assert.equal(isAskableTopic({ key: "x-base", entityType: null, knownSummary: "An L2." }), true);
+  assert.equal(isAskableTopic({ key: "x-base", entityType: null, knownSummary: "   " }), false);
+});
+
 // ── What the question is actually about ───────────────────────────────────────
 
 function topicWith(overrides: Partial<QueueTopic> = {}): QueueTopic {
