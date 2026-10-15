@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildFreshBrief, buildRefreshBrief, prettifyKey, topicTitle } from "../src/brief.ts";
+import { buildBrief, buildFreshBrief, buildRefreshBrief, prettifyKey, topicTitle } from "../src/brief.ts";
 import { coerceRecord, extractJsonObject } from "../src/claude.ts";
 import { loadConfig } from "../src/config.ts";
 import { joinParts } from "../src/flow.ts";
 import { createHealthHandler } from "../src/health.ts";
 import { isSetupError, isAskableTopic, signRequest } from "../src/nurxai.ts";
+import { isUsableQuestion, trimPostAngle, writeQuestion } from "../src/question.ts";
 import type { LoreRecord } from "../src/record.ts";
 import { isUsableRecord } from "../src/record.ts";
 import {
@@ -119,6 +120,50 @@ check("a topic that is only an account is never asked about", () => {
   // And a key that was never an author handle in the first place is fine.
   assert.equal(isAskableTopic({ key: "token-theo", entityType: "token" }), true);
   assert.equal(isAskableTopic({ key: "name-muse", entityType: null }), true);
+});
+
+// ── The question the operator pastes into Grok ────────────────────────────────
+
+const questionSubject = "Coinbase (company)";
+
+check("a question that names its subject is accepted", () => {
+  assert.equal(
+    isUsableQuestion("Acca, Coinbase er internal harness er voice agent ta ki? Kivabe kaj kore?", questionSubject),
+    true
+  );
+});
+
+check("a report with no question mark is refused", () => {
+  // A report sent to a search engine gets a report back. The template asks.
+  assert.equal(isUsableQuestion("Coinbase is a large American crypto exchange.", questionSubject), false);
+});
+
+check("a question about something else is refused", () => {
+  // The answer is filed against the subject whatever it says, so a question that
+  // never names the subject is not allowed near the store.
+  assert.equal(isUsableQuestion("Aerodrome er TVL koto? Ar er team kara?", questionSubject), false);
+});
+
+check("an empty or absurdly long answer is refused", () => {
+  assert.equal(isUsableQuestion("", questionSubject), false);
+  assert.equal(isUsableQuestion("   ", questionSubject), false);
+  assert.equal(isUsableQuestion(`${"Coinbase ".repeat(400)}ki?`, questionSubject), false);
+});
+
+check("a topic with no recent posts skips the model entirely", async () => {
+  // Nothing to be specific about, so the template — which already asks everything —
+  // is the better answer, and no call is made.
+  const config = loadConfig(env());
+  const written = await writeQuestion(config, { ...freshTopic, key: "x-aerodrome", label: "Aerodrome" });
+  assert.equal(written.source, "template");
+  assert.equal(written.text, buildBrief({ ...freshTopic, key: "x-aerodrome", label: "Aerodrome" }));
+});
+
+check("the angle sent to the model is trimmed to the part that carries the subject", () => {
+  const trimmed = trimPostAngle("x".repeat(900));
+  assert.ok(trimmed.length <= 321, String(trimmed.length));
+  assert.ok(trimmed.endsWith("…"), "it should show that it was cut");
+  assert.equal(trimPostAngle("  a\n\nb  "), "a b");
 });
 
 // ── Pulling JSON out of whatever the model actually said ─────────────────────

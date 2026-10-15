@@ -236,7 +236,25 @@ export function coerceRecord(parsed: unknown): ParseOutcome {
   };
 }
 
-async function callAnthropic(config: Config, document: string): Promise<string | null> {
+/**
+ * One call to the parser model, used by both prompts in this project.
+ *
+ * Shared rather than duplicated because the two callers differ only in what they
+ * ask for: the language-agnostic plumbing (which provider, which key, which
+ * timeout, how the blocks come back) is the part that is easy to get subtly wrong
+ * twice.
+ */
+export async function callModel(
+  config: Config,
+  args: { label: string; system: string; user: string; maxTokens: number }
+): Promise<string | null> {
+  return config.provider === "anthropic" ? callAnthropic(config, args) : callGateway(config, args);
+}
+
+async function callAnthropic(
+  config: Config,
+  args: { label: string; system: string; user: string; maxTokens: number }
+): Promise<string | null> {
   try {
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -247,15 +265,15 @@ async function callAnthropic(config: Config, document: string): Promise<string |
       },
       body: JSON.stringify({
         model: config.parserModel,
-        max_tokens: 3000,
-        system: SYSTEM,
-        messages: [{ role: "user", content: `DOCUMENT\n<<<\n${document}\n>>>` }]
+        max_tokens: args.maxTokens,
+        system: args.system,
+        messages: [{ role: "user", content: args.user }]
       }),
       signal: AbortSignal.timeout(config.parserTimeoutMs)
     });
     const body = (await res.json().catch(() => null)) as any;
     if (!res.ok) {
-      warn("[claude] anthropic", res.status, body?.error?.message || "");
+      warn("[claude]", args.label, "anthropic", res.status, body?.error?.message || "");
       return null;
     }
     const blocks = Array.isArray(body?.content) ? body.content : [];
@@ -264,12 +282,15 @@ async function callAnthropic(config: Config, document: string): Promise<string |
       .map((block: any) => block.text)
       .join("");
   } catch (error: any) {
-    warn("[claude] anthropic call failed", error?.message || "?");
+    warn("[claude]", args.label, "anthropic call failed", error?.message || "?");
     return null;
   }
 }
 
-async function callGateway(config: Config, document: string): Promise<string | null> {
+async function callGateway(
+  config: Config,
+  args: { label: string; system: string; user: string; maxTokens: number }
+): Promise<string | null> {
   const base = (process.env.AI_GATEWAY_BASE_URL || "https://ai-gateway.vercel.sh/v1").replace(/\/+$/, "");
   try {
     const res = await fetch(`${base}/chat/completions`, {
@@ -280,23 +301,23 @@ async function callGateway(config: Config, document: string): Promise<string | n
       },
       body: JSON.stringify({
         model: config.parserModel,
-        max_tokens: 3000,
+        max_tokens: args.maxTokens,
         messages: [
-          { role: "system", content: SYSTEM },
-          { role: "user", content: `DOCUMENT\n<<<\n${document}\n>>>` }
+          { role: "system", content: args.system },
+          { role: "user", content: args.user }
         ]
       }),
       signal: AbortSignal.timeout(config.parserTimeoutMs)
     });
     const body = (await res.json().catch(() => null)) as any;
     if (!res.ok) {
-      warn("[claude] gateway", res.status, body?.error?.message || "");
+      warn("[claude]", args.label, "gateway", res.status, body?.error?.message || "");
       return null;
     }
     const content = body?.choices?.[0]?.message?.content;
     return typeof content === "string" ? content : null;
   } catch (error: any) {
-    warn("[claude] gateway call failed", error?.message || "?");
+    warn("[claude]", args.label, "gateway call failed", error?.message || "?");
     return null;
   }
 }
@@ -310,7 +331,12 @@ export async function parseDocument(config: Config, document: string): Promise<P
   const truncated = trimmed.length > DOC_LIMIT;
   const payload = truncated ? trimmed.slice(0, DOC_LIMIT) : trimmed;
 
-  const raw = config.provider === "anthropic" ? await callAnthropic(config, payload) : await callGateway(config, payload);
+  const raw = await callModel(config, {
+    label: "parse",
+    system: SYSTEM,
+    user: `DOCUMENT\n<<<\n${payload}\n>>>`,
+    maxTokens: 3000
+  });
   if (raw === null) return { ok: false, reason: "the parser model could not be reached" };
 
   const json = extractJsonObject(raw);

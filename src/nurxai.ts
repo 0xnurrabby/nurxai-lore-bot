@@ -12,6 +12,12 @@ import type { LoreRecord } from "./record.ts";
 // Signing format (must match dashboard/lib/entity/agent-auth.ts):
 //   HMAC-SHA256(secret, `${timestamp}.${METHOD}.${path}.${sha256hex(body)}`)
 
+export type RecentPost = {
+  author: string | null;
+  postText: string;
+  createdAt: string;
+};
+
 export type QueueTopic = {
   key: string;
   label: string;
@@ -20,12 +26,15 @@ export type QueueTopic = {
   misses: number;
   lastSeenAt: string;
   knownSummary: string | null;
+  /** What the posts that produced this miss were actually about, newest first. */
+  recentPosts?: RecentPost[];
 };
 
 export type QueueResponse = {
   generatedAt: string;
   windowDays: number;
   minMisses: number;
+  postContextHours?: number;
   topics: QueueTopic[];
 };
 

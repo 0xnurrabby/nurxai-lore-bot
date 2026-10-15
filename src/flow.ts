@@ -6,6 +6,7 @@ import type { NurxaiClient, QueueTopic } from "./nurxai.ts";
 import { isAskableTopic, isSetupError } from "./nurxai.ts";
 import { buildBrief, topicTitle } from "./brief.ts";
 import { parseDocument } from "./claude.ts";
+import { writeQuestion } from "./question.ts";
 import { isUsableRecord } from "./record.ts";
 import {
   type PendingAsk,
@@ -350,6 +351,7 @@ export class LoreBot {
 
     // Sent to each operator separately so the message ids recorded below belong
     // to the chat they were delivered to.
+    const question = await writeQuestion(this.config, chosen);
     for (const chatId of to ? [to] : this.config.ownerIds) {
       const headerIds = await this.telegram.send(
         chatId,
@@ -359,11 +361,11 @@ export class LoreBot {
       );
       // `pre` gives the answer a monospace block with a copy button, which is the
       // operator's next move and the reason this is not sent as ordinary text.
-      const briefIds = await this.telegram.send(chatId, buildBrief(chosen), { pre: true });
+      const briefIds = await this.telegram.send(chatId, question.text, { pre: true });
       rememberBrief(this.state, chatId, [...headerIds, ...briefIds], ask);
     }
     this.persist();
-    log("[bot] asked", chosen.key, chosen.reason);
+    log("[bot] asked", chosen.key, chosen.reason, `(question ${question.source}, ${question.text.length} chars)`);
   }
 
   /**
