@@ -231,7 +231,7 @@ this repo:
 
 `--include=dev` matters: `NODE_ENV=production` skips devDependencies and the bot
 runs from `tsx`, which is one. The `npm run check` on the build is a deploy gate —
-it typechecks and runs the 61 offline assertions, so a broken commit cannot ship.
+it typechecks and runs the 72 offline assertions, so a broken commit cannot ship.
 
 Set `HEALTH_PATH` to a random slug and give the same value to the health check
 path:
@@ -247,7 +247,7 @@ check, leaving `PORT` unset is better — the process then opens no listener at 
 
 ```bash
 npm install
-npm run check     # typecheck + 61 offline assertions
+npm run check     # typecheck + 72 offline assertions
 npm start
 ```
 
@@ -308,12 +308,31 @@ expired, the question carries the old summary and the parser's answer replaces i
 The instruction is explicit: anything no longer true has to be named, because the
 parts that go unmentioned are treated as still correct.
 
-**The question is written the way the operator writes.** Roman-script Bangla, in a
-monospace block, because it is going into a chat window and a form-letter in
-English headings produced form-letter answers. The points are the same fields the
-record needs — asked as questions rather than demanded as sections — and the parser
-is told to write the record in English regardless, because the reply writer's
-output is English and Bengali fields would bleed into it.
+**The question is written the way the operator writes, and it always carries the
+post.** Roman-script Bangla, in a monospace block, because it is going into a chat
+window and a form-letter in English headings produced form-letter answers. More
+importantly it quotes the actual post the operator kept meeting, because a question
+that says only "Acca, Git niye aktu bolo" names no project, no subject and no story —
+a search engine given that answers about something else.
+
+There are three shapes and the material decides which:
+
+| Situation | Shape |
+| --- | --- |
+| A record exists, and the posts carried signals it does not cover | **targeted** — names those signals and says outright that the rest is already on file |
+| A record exists and is out of date | **refresh** — carries the old record so the answer corrects it instead of starting over |
+| Nothing on record | **first** — asks everything, and quotes the posts |
+
+Every shape says plainly when it has no post to quote, rather than pretending. The
+model writes the question when there is a post to work from; two posts on the same
+subject produce two different questions, which is asserted, because "every prompt
+looks the same" is the failure this replaces. With no post, the template is used
+directly — not as a speed optimisation, but because the template is built from the
+same material and there is nothing a model could add that would not be invented.
+
+The parser is told to write the record in English regardless of the document's
+language, because the reply writer's output is English and Bengali fields would bleed
+into it.
 
 **The record's shape is validated twice, for two different reasons.** `coerceRecord`
 here exists so you get a useful error before a wasted round trip.
@@ -337,7 +356,7 @@ the side that has to survive a hostile paste.
 | `src/state.ts` | One small JSON file: offset, pending ask, cooldowns, and which message carried which brief |
 | `src/health.ts` | The single inbound path, and why it exists |
 | `src/flow.ts` | The whole conversation |
-| `scripts/selfcheck.ts` | 61 offline assertions over the pure parts |
+| `scripts/selfcheck.ts` | 72 offline assertions over the pure parts |
 
 ---
 

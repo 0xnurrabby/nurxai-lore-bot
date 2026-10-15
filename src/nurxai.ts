@@ -15,6 +15,8 @@ import type { LoreRecord } from "./record.ts";
 export type RecentPost = {
   author: string | null;
   postText: string;
+  /** Signal words the post carried that the stored record does not cover. */
+  missing?: string[];
   createdAt: string;
 };
 

@@ -452,6 +452,9 @@ export class LoreBot {
       // leave the document somewhere, or the operator's paste is gone.
       this.collecting = null;
       if (paste.noticeId) await this.telegram.edit(paste.chat, paste.noticeId, `Read ${chars} characters.`);
+      // And straight on to the next one. Waiting for the timer here is what made
+      // the operator press /next to get anything done.
+      this.autoAsk().catch((error) => warn("[bot] auto-ask after filing failed", error?.message || "?"));
     } else {
       // Kept, and deliberately not re-armed: retrying on a timer would hammer a
       // failure the operator has not fixed yet.
@@ -493,17 +496,22 @@ export class LoreBot {
 
     const record = outcome.record;
     const freshness = written.data.freshnessUntil.slice(0, 10);
+    // Only mention the key when it is not the one we asked about. Saying
+    // "key x-base (as x-base)" was noise that made the operator stop and read it.
+    const storedAs = written.data.key && written.data.key !== key ? `stored as ${written.data.key}` : null;
     await this.say(
       [
         `Filed: ${record.canonicalName}`,
-        `key ${written.data.key}${key === record.canonicalName ? "" : ` (as ${key})`}`,
+        storedAs,
         `${written.data.created ? "new record" : "record updated"} · good until ${freshness}`,
         `confidence ${written.data.confidence}`,
         `state ${record.currentState.length} · timeline ${record.timeline.length} · team ${record.team.length} · sources ${record.citations.length}` +
           (outcome.truncated ? "\n(the paste was trimmed to 40k characters before parsing)" : ""),
         "",
         `Every reply NurXai writes about this now reads it${reason === "stale" ? " — and the parts your answer did not mention were left in place" : ""}.`
-      ].join("\n"),
+      ]
+        .filter((line) => line !== null)
+        .join("\n"),
       to
     );
     log("[bot] filed", written.data.key, "created:", written.data.created, "confidence:", written.data.confidence);

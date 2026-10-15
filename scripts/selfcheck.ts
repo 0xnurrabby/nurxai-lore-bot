@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildBrief, buildFreshBrief, buildRefreshBrief, prettifyKey, topicTitle } from "../src/brief.ts";
+import { buildBrief, buildFreshBrief, buildRefreshBrief, postExcerpt, prettifyKey, topicTitle } from "../src/brief.ts";
 import { coerceRecord, extractJsonObject } from "../src/claude.ts";
 import { loadConfig } from "../src/config.ts";
 import { joinParts } from "../src/flow.ts";
 import { createHealthHandler } from "../src/health.ts";
-import { isSetupError, isAskableTopic, signRequest } from "../src/nurxai.ts";
-import { isUsableQuestion, trimPostAngle, writeQuestion } from "../src/question.ts";
+import { isSetupError, isAskableTopic, signRequest, type QueueTopic } from "../src/nurxai.ts";
+import { isUsableQuestion, writeQuestion } from "../src/question.ts";
 import type { LoreRecord } from "../src/record.ts";
 import { isUsableRecord } from "../src/record.ts";
 import {
@@ -122,6 +122,74 @@ check("a topic that is only an account is never asked about", () => {
   assert.equal(isAskableTopic({ key: "name-muse", entityType: null }), true);
 });
 
+// ── What the question is actually about ───────────────────────────────────────
+
+function topicWith(overrides: Partial<QueueTopic> = {}): QueueTopic {
+  return {
+    key: "x-coinbase",
+    label: "Coinbase",
+    entityType: "company",
+    reason: "no_lore",
+    misses: 3,
+    lastSeenAt: "",
+    knownSummary: null,
+    ...overrides
+  };
+}
+
+const aPost = (postText: string, missing: string[] = []) => ({
+  author: "someone",
+  postText,
+  missing,
+  createdAt: ""
+});
+
+check("a first question quotes the post it came from", () => {
+  // The complaint in one line: the question said "Acca, Git niye aktu bolo" and
+  // named no project, no subject and no story, so Grok had nothing to search for.
+  const brief = buildBrief(
+    topicWith({ recentPosts: [aPost("We just added voice agents to our internal Coinbase harness")] })
+  );
+  assert.ok(brief.includes("internal Coinbase harness"), "the post itself has to be in the question");
+  assert.ok(brief.includes("Coinbase"), "and the subject");
+  assert.ok(brief.includes("kaj kore"), "and the questions");
+});
+
+check("the same subject with a different post gets a different question", () => {
+  const one = buildBrief(
+    topicWith({ recentPosts: [aPost("We just added voice agents to our internal Coinbase harness")] })
+  );
+  const two = buildBrief(topicWith({ recentPosts: [aPost("Coinbase now lets AI agents trade on your behalf")] }));
+  assert.notEqual(one, two, "the post has to change the question, or every prompt reads the same");
+});
+
+check("a question with no post admits it instead of asking a bare name", () => {
+  const brief = buildBrief(topicWith());
+  assert.ok(brief.includes("shudhu dekhechi"), "it must say the name is all it has");
+  assert.ok(brief.includes("Coinbase"));
+});
+
+check("a record with a specific hole is asked about, and nothing else is", () => {
+  const brief = buildBrief(
+    topicWith({
+      reason: "stale",
+      knownSummary: "Ethereum L2 built by Coinbase.",
+      recentPosts: [aPost("Base just shipped fault proofs", ["exploit", "launch"])]
+    })
+  );
+  assert.ok(brief.includes("exploit"), "the hole must be named");
+  assert.ok(brief.includes("launch"));
+  assert.ok(brief.includes("Ethereum L2 built by Coinbase."), "the record must be visible");
+  assert.ok(!brief.includes("backstory"), "a targeted question must not ask everything over again");
+});
+
+check("a record with no holes gets the refresh shape", () => {
+  const brief = buildBrief(topicWith({ reason: "stale", knownSummary: "Ethereum L2 built by Coinbase." }));
+  assert.ok(brief.includes("refresh"));
+  assert.ok(brief.includes("Ethereum L2 built by Coinbase."));
+  assert.ok(brief.includes("sotti na"), "it must be asked which parts are dead");
+});
+
 // ── The question the operator pastes into Grok ────────────────────────────────
 
 const questionSubject = "Coinbase (company)";
@@ -159,11 +227,11 @@ check("a topic with no recent posts skips the model entirely", async () => {
   assert.equal(written.text, buildBrief({ ...freshTopic, key: "x-aerodrome", label: "Aerodrome" }));
 });
 
-check("the angle sent to the model is trimmed to the part that carries the subject", () => {
-  const trimmed = trimPostAngle("x".repeat(900));
-  assert.ok(trimmed.length <= 321, String(trimmed.length));
+check("a post is excerpted to the part that carries its subject", () => {
+  const trimmed = postExcerpt("x".repeat(900));
+  assert.ok(trimmed.length <= 241, String(trimmed.length));
   assert.ok(trimmed.endsWith("…"), "it should show that it was cut");
-  assert.equal(trimPostAngle("  a\n\nb  "), "a b");
+  assert.equal(postExcerpt("  a\n\nb  "), "a b");
 });
 
 // ── Pulling JSON out of whatever the model actually said ─────────────────────

@@ -156,7 +156,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     autoAsk: bool(env, "LORE_AUTO_ASK", true),
     askCooldownMs: num(env, "LORE_ASK_COOLDOWN_HOURS", 24) * 60 * 60 * 1000,
     minMisses: Math.max(1, Math.round(num(env, "LORE_MIN_MISSES", 2))),
-    pollIntervalMs: Math.max(5, num(env, "LORE_POLL_INTERVAL_MINUTES", 30)) * 60 * 1000,
+    // The gap between "NurXai met this topic" and "the operator sees a question".
+    // Three minutes of polling is a few hundred cheap signed GETs a day against a
+    // service that is awake anyway, and it is the difference between the prompt
+    // appearing on its own and the operator pressing /next to make it happen.
+    pollIntervalMs: Math.max(1, num(env, "LORE_POLL_INTERVAL_MINUTES", 3)) * 60 * 1000,
     // A paste that arrives in parts arrives in parts within a second or two of
     // each other, so this only has to outlast the operator's own copy-paste. Too
     // short and a slow paste is filed half-complete; too long and every single
