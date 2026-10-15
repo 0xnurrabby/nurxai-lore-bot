@@ -32,7 +32,6 @@ export type State = {
   pending: PendingAsk | null;
   /** key → when we last asked. This is the bot's own cooldown. */
   asked: Record<string, { at: number; reason: string }>;
-  paused: boolean;
   /**
    * `"<chatId>:<messageId>"` → the brief that message carried.
    *
@@ -54,7 +53,7 @@ const BRIEF_MAX = 200;
 const ASKED_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 export function emptyState(): State {
-  return { version: 1, offset: 0, pending: null, asked: {}, paused: false, briefs: {} };
+  return { version: 1, offset: 0, pending: null, asked: {}, briefs: {} };
 }
 
 export function loadState(file: string): State {
@@ -66,7 +65,6 @@ export function loadState(file: string): State {
       offset: typeof raw.offset === "number" && Number.isFinite(raw.offset) ? raw.offset : 0,
       pending: raw.pending && typeof raw.pending.key === "string" ? (raw.pending as PendingAsk) : null,
       asked: raw.asked && typeof raw.asked === "object" ? (raw.asked as State["asked"]) : {},
-      paused: raw.paused === true,
       briefs: raw.briefs && typeof raw.briefs === "object" ? (raw.briefs as State["briefs"]) : {}
     };
   } catch (error: any) {

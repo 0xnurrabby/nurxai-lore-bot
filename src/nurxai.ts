@@ -41,6 +41,23 @@ export type WriteResponse = {
 
 export type ApiResult<T> = { ok: true; data: T } | { ok: false; status: number; error: string };
 
+/**
+ * Whether a topic is a subject or just the account that happened to post.
+ *
+ * An `x-<handle>` key with no entity type means the resolver found nothing to
+ * call the subject and fell back to the author. That is not a topic — it is a
+ * stranger — and NurXai's own rule is that lore is never keyed on an individual
+ * author. So the bot refuses to ask about one rather than spending a research on
+ * a private person and writing them into the store.
+ *
+ * This is a guard, not a fix. It stops the noise; the scoring that makes an
+ * author outrank the subject is on the NurXai side and still needs to change.
+ */
+export function isAskableTopic(topic: Pick<QueueTopic, "key" | "entityType">): boolean {
+  if (topic.entityType) return true;
+  return !/^x-[a-z0-9_]+$/i.test(topic.key);
+}
+
 const QUEUE_PATH = "/api/lore/queue";
 const WRITE_PATH = "/api/lore";
 

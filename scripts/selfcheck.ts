@@ -7,7 +7,7 @@ import { coerceRecord, extractJsonObject } from "../src/claude.ts";
 import { loadConfig } from "../src/config.ts";
 import { joinParts } from "../src/flow.ts";
 import { createHealthHandler } from "../src/health.ts";
-import { isSetupError, signRequest } from "../src/nurxai.ts";
+import { isSetupError, isAskableTopic, signRequest } from "../src/nurxai.ts";
 import type { LoreRecord } from "../src/record.ts";
 import { isUsableRecord } from "../src/record.ts";
 import {
@@ -76,33 +76,49 @@ const freshTopic = {
   knownSummary: null
 };
 
-check("a fresh brief asks for every section and never mentions a refresh", () => {
+check("a fresh brief asks everything the record needs, in the register the operator uses", () => {
   const brief = buildFreshBrief(freshTopic);
-  for (const heading of ["NAME", "WHAT IT IS", "WHO RUNS IT", "WHAT IS TRUE RIGHT NOW", "THE BACKSTORY", "COMMUNITY SENTIMENT", "NUMBERS", "WHAT CHANGED RECENTLY", "TRUE VS CLAIMED", "SOURCES"]) {
-    assert.ok(brief.includes(heading), `missing ${heading}`);
+  // The facts the record needs: what it is, who runs it, what is true now, the
+  // backstory, sentiment, numbers, unproven claims, and links.
+  for (const asked of ["Aerodrome", "ki?", "kara ache", "Sesh 30 din", "backstory", "Number", "claim", "link"]) {
+    assert.ok(brief.includes(asked), `the question must ask about ${asked}`);
   }
-  assert.ok(!brief.includes("REFRESH"));
-  assert.ok(brief.includes("x-aerodrome"), "the key must travel with the brief");
-  assert.ok(brief.includes("UNKNOWN"), "it must be allowed to admit ignorance");
-  assert.ok(!brief.includes("JSON"), "we ask for headings, not JSON, and then parse it");
+  assert.ok(brief.includes("janina"), "it must be allowed to admit ignorance");
+  assert.ok(!brief.includes("JSON"), "we ask a question, not JSON, and parse what comes back");
+  assert.ok(!/^[A-Z][A-Z ]{3,}$/m.test(brief), "no SHOUTED section headings — this is pasted into a chat");
+  assert.ok(!brief.includes("x-aerodrome"), "the internal key is ours, not Grok's business");
 });
 
 check("a refresh brief carries the old record and asks what is no longer true", () => {
   const brief = buildRefreshBrief({ ...freshTopic, reason: "stale", knownSummary: "TVL was $900M in March." });
-  assert.ok(brief.includes("REFRESH"));
+  assert.ok(brief.includes("refresh"));
   assert.ok(brief.includes("TVL was $900M in March."), "the old record must be visible to be corrected");
-  assert.ok(brief.includes("no longer true"));
-  assert.ok(brief.includes("deleted"), "the operator should know stale parts are replaced, not merged");
+  assert.ok(brief.includes("sotti na"), "it must be asked which parts are dead");
+  assert.ok(brief.includes("theke jabe"), "the operator should know unmentioned parts survive");
 });
 
 check("a refresh with nothing usable says so instead of showing an empty box", () => {
   const brief = buildRefreshBrief({ ...freshTopic, reason: "stale", knownSummary: null });
-  assert.ok(brief.includes("(nothing usable on file)"));
+  assert.ok(brief.includes("(age kichu nei)"));
 });
 
-check("the brief fits in one Telegram message", () => {
+check("the question fits in one Telegram message", () => {
   assert.ok(buildFreshBrief(freshTopic).length < 4000, String(buildFreshBrief(freshTopic).length));
   assert.ok(buildRefreshBrief({ ...freshTopic, reason: "stale", knownSummary: "x".repeat(800) }).length < 4000);
+});
+
+check("a topic that is only an account is never asked about", () => {
+  // The whole reason the first live prompt was "Arpit Bhayani": an x-<handle> key
+  // with no entity type means the resolver fell back to the author.
+  assert.equal(isAskableTopic({ key: "x-arpit_bhayani", entityType: null }), false);
+  assert.equal(isAskableTopic({ key: "x-oxyousse_", entityType: null }), false);
+  assert.equal(isAskableTopic({ key: "x-telegram", entityType: null }), false);
+  // A handle the resolver recognised as a real entity is a different thing.
+  assert.equal(isAskableTopic({ key: "x-base", entityType: "protocol" }), true);
+  assert.equal(isAskableTopic({ key: "x-coinbase", entityType: "company" }), true);
+  // And a key that was never an author handle in the first place is fine.
+  assert.equal(isAskableTopic({ key: "token-theo", entityType: "token" }), true);
+  assert.equal(isAskableTopic({ key: "name-muse", entityType: null }), true);
 });
 
 // ── Pulling JSON out of whatever the model actually said ─────────────────────
@@ -234,15 +250,15 @@ check("state survives a save and load", () => {
   const file = path.join(dir, "state.json");
   const state = emptyState();
   state.offset = 4242;
-  state.paused = true;
   markAsked(state, { key: "x-aerodrome", label: "Aerodrome", reason: "no_lore", askedAt: Date.now() });
+  rememberBrief(state, 7, [99], { key: "x-aerodrome", label: "Aerodrome", reason: "no_lore", askedAt: Date.now() });
   saveState(file, state);
 
   const loaded = loadState(file);
   assert.equal(loaded.offset, 4242);
-  assert.equal(loaded.paused, true);
   assert.equal(loaded.pending?.key, "x-aerodrome");
   assert.equal(Object.keys(loaded.asked).length, 1);
+  assert.equal(Object.keys(loaded.briefs).length, 1);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

@@ -3,7 +3,7 @@ import { log, warn } from "./config.ts";
 import type { Telegram, TelegramMessage } from "./telegram.ts";
 import { describeSender, noteIgnored } from "./telegram.ts";
 import type { NurxaiClient, QueueTopic } from "./nurxai.ts";
-import { isSetupError } from "./nurxai.ts";
+import { isAskableTopic, isSetupError } from "./nurxai.ts";
 import { buildBrief, topicTitle } from "./brief.ts";
 import { parseDocument } from "./claude.ts";
 import { isUsableRecord } from "./record.ts";
@@ -36,20 +36,15 @@ import {
 const HELP = `NurXai lore bot
 
 NurXai writes replies. When it keeps meeting a topic it knows nothing about,
-it says so — and I bring that topic here.
+it says so — and I bring that topic here as a question.
 
-To file lore, reply to a brief with the answer as plain text. If it comes back
-in several messages, send them all — I keep collecting until they stop, then
-file. /done files immediately.
+Copy the question into Grok, then reply to my message with the answer. If the
+answer comes back in several pieces, send them all — I collect them.
 
-/next     the next research brief
-/queue    what is waiting, and how often it came up
-/status   what is pending, and whether NurXai is reachable
-/done     file what I have collected now
-/cancel   throw away what I have collected
-/skip     drop the pending brief
-/pause    stop asking automatically
-/resume   start asking again`;
+/next     send the next question now
+/done     file what I have collected, right now
+/skip     drop this one and move on
+/status   what is going on`;
 
 /** A paste being collected, before it is worth parsing. */
 type Collecting = {
@@ -114,8 +109,8 @@ export class LoreBot {
 
     if (this.state.pending) {
       await this.say(
-        `Still waiting on a paste for ${topicTitle(topicOf(this.state.pending))}.\n` +
-          `Reply to the brief with the answer, or /skip.`
+        `Still waiting on an answer for ${topicTitle(topicOf(this.state.pending))}.\n` +
+          `Reply to the question with the answer, or /skip.`
       );
     }
 
@@ -145,9 +140,9 @@ export class LoreBot {
    * else — two operators should not each get a copy of the other's `/status`. An
    * automatic ask has no asker, so it goes to everyone on the allowlist.
    */
-  private async say(text: string, to?: number): Promise<number[]> {
+  private async say(text: string, to?: number, options: { pre?: boolean } = {}): Promise<number[]> {
     const ids: number[] = [];
-    for (const id of to ? [to] : this.config.ownerIds) ids.push(...(await this.telegram.send(id, text)));
+    for (const id of to ? [to] : this.config.ownerIds) ids.push(...(await this.telegram.send(id, text, options)));
     return ids;
   }
 
@@ -207,35 +202,19 @@ export class LoreBot {
       case "/done":
         if (!this.collecting) return void this.say("Nothing collected to file.", chat);
         return void this.fileCollected("done");
-      case "/cancel": {
-        if (!this.collecting) return void this.say("Nothing collected to throw away.", chat);
-        const dropped = this.collecting;
-        if (dropped.timer) clearTimeout(dropped.timer);
-        this.collecting = null;
-        if (dropped.noticeId) await this.telegram.edit(dropped.chat, dropped.noticeId, "Discarded.");
-        return void this.say(
-          `Threw away ${dropped.body.length.toLocaleString("en-US")} characters for ${dropped.label}. ` +
-            `The brief is still open — paste again, or /skip.`,
-          chat
-        );
-      }
       case "/skip": {
-        if (!this.state.pending) return void this.say("Nothing is pending.", chat);
-        const dropped = this.state.pending;
+        const droppedPaste = this.collecting;
+        const droppedAsk = this.state.pending;
+        if (!droppedPaste && !droppedAsk) return void this.say("Nothing to skip.", chat);
+        if (droppedPaste) {
+          if (droppedPaste.timer) clearTimeout(droppedPaste.timer);
+          this.collecting = null;
+          if (droppedPaste.noticeId) await this.telegram.edit(droppedPaste.chat, droppedPaste.noticeId, "Discarded.");
+        }
         this.state.pending = null;
-        return void this.say(
-          `Dropped ${topicTitle(topicOf(dropped))}. It stays on cooldown, so it will not come straight back.`,
-          chat
-        );
+        const what = droppedAsk ? topicTitle(topicOf(droppedAsk)) : "that paste";
+        return void this.say(`Dropped ${what}. It stays on cooldown, so it will not come straight back.`, chat);
       }
-      case "/pause":
-        this.state.paused = true;
-        return void this.say("Paused. /next still works, /resume restarts it.", chat);
-      case "/resume":
-        this.state.paused = false;
-        return void this.say("Resumed.", chat);
-      case "/queue":
-        return void this.showQueue(chat);
       case "/next":
         return void this.ask(true, chat);
       default:
@@ -251,8 +230,8 @@ export class LoreBot {
     if (!target) {
       return void this.say(
         "I do not know which topic that belongs to. Nothing is pending, and this was not a reply to a\n" +
-          "brief I sent — so I would be guessing. Reply to the brief you are answering, or send /next\n" +
-          "for a new one.",
+          "message I sent — so I would be guessing. Reply to the question you are answering, or send\n" +
+          "/next for a new one.",
         chat
       );
     }
@@ -290,16 +269,13 @@ export class LoreBot {
     // ask, or it would report a stale answer to the one question it exists for.
     const queue = await this.nurxai.queue();
     const link = queue.ok
-      ? `reachable, ${queue.data.topics.length} topic(s) waiting`
+      ? `reachable, ${queue.data.topics.filter(isAskableTopic).length} topic(s) worth asking about`
       : `${queue.error}${isSetupError(queue.error) ? " — set the same secret on both sides" : ""}`;
 
     const lines = [
       `NurXai: ${link}`,
-      `pending: ${pending ? topicTitle(topicOf(pending)) : "none"}`,
-      `collecting: ${this.collecting ? `${this.collecting.label}, ${this.collecting.parts} part(s), ${this.collecting.body.length} characters` : "nothing"}`,
-      `automatic asking: ${
-        this.state.paused ? "paused" : this.config.autoAsk ? `every ${Math.round(this.config.pollIntervalMs / 60000)}m` : "off"
-      }`,
+      `waiting on: ${pending ? topicTitle(topicOf(pending)) : "nothing"}`,
+      `collecting: ${this.collecting ? `${this.collecting.label}, ${this.collecting.parts} message(s), ${this.collecting.body.length} characters` : "nothing"}`,
       `topics on cooldown: ${onCooldown}`,
       `allowed to talk to me: ${this.config.ownerIds.length}`,
       `state file: ${this.config.stateFile}`
@@ -317,25 +293,21 @@ export class LoreBot {
       await this.say(`Could not read the queue: ${result.error}${hint}`, to);
       return null;
     }
-    return result.data.topics.filter((topic) => topic.misses >= this.config.minMisses);
-  }
 
-  private async showQueue(to?: number): Promise<void> {
-    const topics = await this.fetchQueue(to);
-    if (!topics) return;
-    if (!topics.length) {
-      return void this.say("Nothing waiting. Every topic NurXai meets has lore.", to);
+    const waiting = result.data.topics.filter((topic) => topic.misses >= this.config.minMisses);
+    const askable = waiting.filter(isAskableTopic);
+    const skipped = waiting.filter((topic) => !isAskableTopic(topic));
+    if (skipped.length) {
+      log(
+        `[bot] skipped ${skipped.length} topic(s) that are only an account, not a subject:`,
+        skipped.map((topic) => topic.key).join(", ")
+      );
     }
-    const lines = topics.map((topic, index) => {
-      const seen = `${topic.misses} post${topic.misses === 1 ? "" : "s"}`;
-      const cooldown = isOnCooldown(this.state, topic.key, this.config.askCooldownMs) ? " (on cooldown)" : "";
-      return `${index + 1}. ${topicTitle(topic)} — ${topic.reason === "stale" ? "record is stale" : "no lore yet"}, ${seen}${cooldown}`;
-    });
-    await this.say(`Waiting:\n\n${lines.join("\n")}\n\n/next to start on the top one.`, to);
+    return askable;
   }
 
   private async autoAsk(): Promise<void> {
-    if (this.stopped || this.state.paused || !this.config.autoAsk) return;
+    if (this.stopped || !this.config.autoAsk) return;
     if (this.state.pending || this.collecting) return;
     await this.ask(false);
   }
@@ -381,11 +353,13 @@ export class LoreBot {
     for (const chatId of to ? [to] : this.config.ownerIds) {
       const headerIds = await this.telegram.send(
         chatId,
-        `Next: ${topicTitle(chosen)}\n${why} — ${count}.\n\n` +
-          `Paste the brief below into Grok on X, then reply to it here with the answer.\n` +
-          `If it is long, send it in several messages — I collect them.\n/skip to drop it.`
+        `${topicTitle(chosen)} — ${why}, ${count}.\n\n` +
+          `Copy the question below into Grok, then reply to this message with its answer.\n` +
+          `If the answer is long, send it as several messages — I collect them. /skip to drop this one.`
       );
-      const briefIds = await this.telegram.send(chatId, buildBrief(chosen));
+      // `pre` gives the answer a monospace block with a copy button, which is the
+      // operator's next move and the reason this is not sent as ordinary text.
+      const briefIds = await this.telegram.send(chatId, buildBrief(chosen), { pre: true });
       rememberBrief(this.state, chatId, [...headerIds, ...briefIds], ask);
     }
     this.persist();

@@ -26,7 +26,7 @@ GET /api/lore/queue        →  x-aerodrome, no lore, 7 posts
         │
         ▼
 Telegram: "Next: Aerodrome (protocol) — no lore yet, 7 posts without an answer"
-          + a research brief, formatted for Grok
+          + a monospace question, tap-to-copy
         │
         │  you paste the brief into Grok on X
         ▼
@@ -120,7 +120,7 @@ secret is not in the token.
 is for the ordinary case of one operator with two Telegram accounts, and the rules
 are chosen so two accounts can never corrupt each other's work:
 
-- **A command answers its sender only.** `/status` and `/queue` go back to whoever
+- **A command answers its sender only.** `/status` and `/next` go back to whoever
   typed them, so a second account is never notified about the first one's chores.
 - **An automatic ask goes to everyone.** It has no sender — the bot spoke first —
   so every account on the list sees it.
@@ -231,7 +231,7 @@ this repo:
 
 `--include=dev` matters: `NODE_ENV=production` skips devDependencies and the bot
 runs from `tsx`, which is one. The `npm run check` on the build is a deploy gate —
-it typechecks and runs the 60 offline assertions, so a broken commit cannot ship.
+it typechecks and runs the 61 offline assertions, so a broken commit cannot ship.
 
 Set `HEALTH_PATH` to a random slug and give the same value to the health check
 path:
@@ -247,7 +247,7 @@ check, leaving `PORT` unset is better — the process then opens no listener at 
 
 ```bash
 npm install
-npm run check     # typecheck + 60 offline assertions
+npm run check     # typecheck + 61 offline assertions
 npm start
 ```
 
@@ -266,39 +266,54 @@ no redeploy here.
 
 ## Commands
 
+Four, because the loop is: a question arrives, you paste it somewhere. Nothing
+else needs a verb.
+
 | Command | Does |
 | --- | --- |
-| `/next` | Sends the next research brief (ignores the cooldown — you asked) |
-| `/queue` | What is waiting and how often each topic came up |
-| `/status` | What is pending, whether automatic asking is on |
-| `/skip` | Drops the pending brief; the topic stays on cooldown |
-| `/pause` / `/resume` | Turns automatic asking off and on |
-| any other text | Filed as the answer to the pending brief |
+| `/next` | Send the next question now, without waiting for the timer |
+| `/done` | File what I have collected, without waiting for the quiet timer |
+| `/skip` | Drop this question and the collected paste; the topic goes on cooldown |
+| `/status` | Whether NurXai is reachable, what is open, what is being collected |
+| any other text | Collected as the answer to the question you replied to |
+
+`/queue`, `/pause`, `/resume` and `/cancel` are gone. Asking is already
+one-at-a-time — a new question only arrives after you file or skip the last one —
+so there was nothing for `/pause` to pause, and `/cancel` was the same verb as
+`/skip`.
 
 ---
 
 ## Design notes
 
-**One outstanding brief, ever.** The pending topic is stored, and a paste is
-always filed against exactly that topic. A queue of open questions, or a topic
-chosen by which message you replied to, is how the wrong research ends up filed
-against the wrong subject without anyone noticing.
+**One outstanding question, ever.** The pending topic is stored, and a paste is
+always filed against exactly that topic — or against the message you replied to,
+which is the same topic stated explicitly. A queue of open questions is how the
+wrong research ends up filed against the wrong subject without anyone noticing.
 
 **Triggers come from real usage.** The queue reads the cache-event log the reply
 path already writes, so "this topic matters" is measured from posts that actually
 happened rather than guessed from a list. A topic needs at least two posts
 (`LORE_MIN_MISSES`) before it is worth your time.
 
+**A question about a person is not asked.** An `x-<handle>` key with no entity
+type means the resolver found nothing to call the subject and fell back to the
+author of the post. That is a stranger, not a topic, and NurXai's own rule is that
+lore is never keyed on an individual author — so `isAskableTopic` refuses it and
+logs what it skipped. This is a guard, not a fix: the scoring that lets an author
+outrank the subject lives on the NurXai side and still needs to change.
+
 **Stale records get corrected, not duplicated.** When a topic's stored record has
-expired, the brief carries the old summary and the parser's answer replaces it.
+expired, the question carries the old summary and the parser's answer replaces it.
 The instruction is explicit: anything no longer true has to be named, because the
 parts that go unmentioned are treated as still correct.
 
-**The brief asks for headings, not JSON.** Grok's answer is prose whatever you ask
-for; a prompt demanding JSON gets broken JSON or a refusal. Fixed headings survive
-being copied out of a chat window intact, and `extractJsonObject` in `claude.ts`
-handles the model's output robustly enough that a fenced block or a stray sentence
-does not matter.
+**The question is written the way the operator writes.** Roman-script Bangla, in a
+monospace block, because it is going into a chat window and a form-letter in
+English headings produced form-letter answers. The points are the same fields the
+record needs — asked as questions rather than demanded as sections — and the parser
+is told to write the record in English regardless, because the reply writer's
+output is English and Bengali fields would bleed into it.
 
 **The record's shape is validated twice, for two different reasons.** `coerceRecord`
 here exists so you get a useful error before a wasted round trip.
@@ -316,13 +331,13 @@ the side that has to survive a hostile paste.
 | `src/config.ts` | Environment, validated once at startup |
 | `src/telegram.ts` | Telegram client — long poll, send, split, escape |
 | `src/nurxai.ts` | The signed client. The only place a secret is used. |
-| `src/brief.ts` | The research brief you paste into Grok |
+| `src/brief.ts` | The question you paste into Grok, in the operator's own register |
 | `src/claude.ts` | Document → record. The one model call. |
 | `src/record.ts` | The record's shape, and whether it is worth filing |
 | `src/state.ts` | One small JSON file: offset, pending ask, cooldowns, and which message carried which brief |
 | `src/health.ts` | The single inbound path, and why it exists |
 | `src/flow.ts` | The whole conversation |
-| `scripts/selfcheck.ts` | 60 offline assertions over the pure parts |
+| `scripts/selfcheck.ts` | 61 offline assertions over the pure parts |
 
 ---
 

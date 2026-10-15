@@ -1,16 +1,26 @@
 import type { QueueTopic } from "./nurxai.ts";
 
-// The research brief the operator pastes into Grok on X.
+// The question the operator pastes into Grok on X.
 //
 // There is no Grok API call in this project and there is not meant to be. The
 // operator runs the search in the app they already have, which means the bot
 // needs no xAI credential, no per-call cost, and no explanation for why a model
 // was allowed to spend money on its own initiative.
 //
-// The format is fixed sections rather than JSON. Grok's answer is prose whatever
-// we ask for, and a prompt demanding JSON produces either broken JSON or a
-// refusal; fixed headings survive being copied out of a chat window intact. The
-// parser in claude.ts is what turns headings into a record.
+// WHY BANGLISH
+// The operator is the one pasting this into a chat window, so it is written the
+// way they asked for it — plain Roman-script Bangla, the way they would type it
+// themselves. A form-letter in English headings produced form-letter answers;
+// a question a person would actually ask produced the rich answer that started
+// this. The points below are the same fields the record needs, asked as questions
+// rather than demanded as sections.
+//
+// WHY IT STILL ASKS FOR EVERYTHING
+// The record has to carry what a reply needs: what the thing is, who runs it,
+// what is true now, the drama, the numbers, and links. Asking for them in prose
+// rather than as headings changes nothing about which facts come back — it only
+// changes whether a human can paste it without feeling like they are running a
+// script.
 
 const KEY_PREFIXES = ["x-", "site-", "token-", "name-", "narr-", "co-", "person-", "org-", "topic-"];
 
@@ -33,67 +43,35 @@ export function topicTitle(topic: QueueTopic): string {
   return topic.entityType ? `${label} (${topic.entityType})` : label;
 }
 
-const SECTIONS = `NAME
-  The canonical name, plus every alias, @handle and $ticker people actually use.
+/** What every brief asks, whatever the subject is. */
+const QUESTIONS = `- Eta asole ki? Kibhabe kaj kore, ar kar jonno?
+- Er pichone kara ache? Founder, CEO, core team — name, role, handle.
+- Ekhon ki obostha? Sesh 30 din e ki change hoise, ki ship hoise, ki bhenge gese.
+- Er backstory ta ki? Kobe shuru holo, kono pivot, exit, exploit, jhogra, drama — date diye.
+- Ja ra asole use kore tara ki bole, ar ja ra dislike kore tara ki bole? Kon specific
+  kotha ta tara bole seta bolo, shudhu "bhalo" ba "kharap" na.
+- Number diye bolte paro? Users, revenue, TVL, volume, raise, valuation — tarik shoho.
+- Eta nije ki claim kore jeta basically unproven?
+- Ja source tumi actually dekhecho, tar link dile bhalo hoy.`;
 
-WHAT IT IS
-  Two or three sentences. What it does, and who it is for.
+const RULES = `Bangla te likho, roman script e cholbe. Jeta sotti tai likho.
 
-WHO RUNS IT
-  Founders and core team: name, role, handle. Write UNKNOWN rather than guessing
-  at a name.
+Jodi kono kichu confirm korte na paro, tahole "janina" likho. Bhul likhar cheye janina
+bola onek bhalo — ei kotha pore publicly repeat hobe, tai ekta bhul fact ekta faka
+jagyer cheye onek kharap.
 
-WHAT IS TRUE RIGHT NOW
-  Three to six bullets. Current state only: what shipped, what broke, what
-  changed, where the numbers sit. Date every bullet.
+Kono introduction, conclusion, ba nijer mone kora kichu likho na. Shudhu ja ja
+actually paicho seta likho.`;
 
-THE BACKSTORY
-  The history that matters, oldest first. Milestones, decisions, and above all
-  any fight, exit, exploit, pivot or drama. Date each one.
-
-COMMUNITY SENTIMENT
-  How the people who genuinely use it talk about it, and what the people who
-  dislike it say. Name the specific complaint and the specific praise.
-
-NUMBERS
-  Concrete figures you can stand behind: TVL, users, revenue, volume, raises,
-  valuations. Give the date for each.
-
-WHAT CHANGED RECENTLY
-  Only the last 30 days.
-
-TRUE VS CLAIMED
-  Anything the project says about itself that is disputed or unproven.
-
-SOURCES
-  Up to ten URLs you actually retrieved.`;
-
-function header(topic: QueueTopic): string {
-  return `SUBJECT: ${topicTitle(topic)}\nINTERNAL KEY: ${topic.key}`;
-}
-
-function rules(): string {
-  return `Plain text with those headings and nothing else. No introduction, no
-conclusion, no commentary, no suggested posts or replies — this is read by a
-program, not by a person.
-
-If you cannot confirm something, write UNKNOWN. An empty answer is far more
-useful than an invented one: anything wrong here gets repeated in public.`;
-}
-
-/** A first record for a topic nobody has researched. */
+/** First record for a topic nobody has researched. */
 export function buildFreshBrief(topic: QueueTopic): string {
+  const subject = topicTitle(topic);
   return [
-    "RESEARCH BRIEF",
+    `Acca, ${subject} niye aktu bolo.`,
     "",
-    header(topic),
+    QUESTIONS,
     "",
-    "Search X and the open web for what is true about this subject right now, then",
-    "answer with exactly these headings, in this order.",
-    "",
-    SECTIONS,
-    "",
-    rules()
+    RULES
   ].join("\n");
 }
 
@@ -101,34 +79,30 @@ export function buildFreshBrief(topic: QueueTopic): string {
  * A refresh for a topic whose stored record has expired.
  *
  * The old summary is shown so the answer corrects it instead of starting over —
- * and the explicit instruction to call out what is no longer true is what lets
- * the store drop the stale parts rather than accumulate contradictions.
+ * and the explicit instruction to say which parts are dead is what lets the
+ * store drop them rather than accumulate contradictions.
  */
 export function buildRefreshBrief(topic: QueueTopic): string {
-  const known = (topic.knownSummary || "").trim() || "(nothing usable on file)";
+  const subject = topicTitle(topic);
+  const known = (topic.knownSummary || "").trim() || "(age kichu nei)";
   return [
-    "RESEARCH BRIEF — REFRESH",
+    `Acca, ${subject} niye aktu refresh koro.`,
     "",
-    header(topic),
-    "",
-    "We already have the following record on file, and some of it is out of date:",
+    "Age amader kache ei record ta chilo:",
     "",
     "---",
     known,
     "---",
     "",
-    "Search X and the open web, then answer with exactly these headings, in this",
-    "order. Write what is true now; do not repeat the record above back to us.",
+    "Ekhon bolo ki ki change hoise, ar upore ja lekha ache tar kon kon part ar sotti na.",
+    "Seta explicitly bolo — karon ja tumi mention korba na, seta amra dhore nibo ekhono",
+    "thik ache. Kono kichu na bole gele purano ta theke jabe.",
     "",
-    SECTIONS,
+    QUESTIONS,
     "",
-    "WHAT CHANGED RECENTLY must also say, in plain terms, which parts of the record",
-    "above are no longer true. Those parts are deleted when your answer is filed, so",
-    "anything you leave unmentioned is treated as still correct.",
+    RULES,
     "",
-    rules(),
-    "",
-    "Do not correct spelling or tone. Only correct facts."
+    "Bangla spelling ba tone thik korte hobe na. Shudhu fact thik koro."
   ].join("\n");
 }
 
