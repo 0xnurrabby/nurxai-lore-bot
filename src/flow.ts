@@ -48,6 +48,9 @@ answer comes back in several pieces, send them all — I collect them.
 /skip     drop this one and move on
 /status   what is going on`;
 
+/** A repeated queue failure is reported once an hour, not once per poll. */
+const QUEUE_ERROR_REPEAT_MS = 60 * 60 * 1000;
+
 /** A paste being collected, before it is worth parsing. */
 type Collecting = {
   key: string;
@@ -85,6 +88,9 @@ export class LoreBot {
   private collecting: Collecting | null = null;
   /** The last set of refused topics we logged, so the poll does not repeat itself. */
   private lastRefusalSignature = "";
+  /** The last queue failure, so an outage is reported once instead of every poll. */
+  private lastQueueError: string | null = null;
+  private lastQueueErrorAt = 0;
 
   constructor(
     private readonly config: Config,
@@ -291,15 +297,31 @@ export class LoreBot {
     return lines.join("\n");
   }
 
-  private async fetchQueue(to?: number): Promise<QueueTopic[] | null> {
+  private async fetchQueue(to?: number, manual = false): Promise<QueueTopic[] | null> {
     const result = await this.nurxai.queue();
+
     if (!result.ok) {
-      const hint =
-        result.error === "LORE_AGENT_DISABLED"
-          ? "\nNurXai has no LORE_AGENT_SECRET set, so its lore endpoints are closed."
-          : "";
-      await this.say(`Could not read the queue: ${result.error}${hint}`, to);
+      // The automatic pass runs every three minutes. Saying the same failure every
+      // three minutes turns one outage into two, which is what the operator saw at
+      // 4:57 and again at 5:00. A repeated error is said once and then held for an
+      // hour, and a human asking is always answered.
+      const now = Date.now();
+      const repeat = this.lastQueueError === result.error && now - this.lastQueueErrorAt < QUEUE_ERROR_REPEAT_MS;
+      this.lastQueueError = result.error;
+      this.lastQueueErrorAt = now;
+      if (manual || !repeat) {
+        const hint =
+          result.error === "LORE_AGENT_DISABLED"
+            ? "\nNurXai has no LORE_AGENT_SECRET set, so its lore endpoints are closed."
+            : "\nThe bot is running; the site is not answering. I will keep checking quietly and tell you when it is back.";
+        await this.say(`NurXai did not answer (${result.error}).${hint}`, to);
+      }
       return null;
+    }
+
+    if (this.lastQueueError !== null) {
+      this.lastQueueError = null;
+      await this.say("NurXai is answering again.", to);
     }
 
     const waiting = result.data.topics.filter((topic) => topic.misses >= this.config.minMisses);
@@ -355,7 +377,7 @@ export class LoreBot {
       );
     }
 
-    const topics = await this.fetchQueue(to);
+    const topics = await this.fetchQueue(to, manual);
     if (!topics) return;
 
     // A prompt must be caused by something the operator did.
