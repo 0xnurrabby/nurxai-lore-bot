@@ -7,7 +7,7 @@ import { coerceRecord, extractJsonObject } from "../src/claude.ts";
 import { loadConfig } from "../src/config.ts";
 import { joinParts } from "../src/flow.ts";
 import { createHealthHandler } from "../src/health.ts";
-import { isSetupError, isAskableTopic, isStatusUrl, preferWithPosts, signRequest, type QueueTopic } from "../src/nurxai.ts";
+import { isSetupError, isAskableTopic, isStatusUrl, justifiedBy, postTimeMs, preferWithPosts, refusalReason, signRequest, type QueueTopic, type RecentPost } from "../src/nurxai.ts";
 import { isUsableQuestion, writeQuestion } from "../src/question.ts";
 import type { LoreRecord } from "../src/record.ts";
 import { isUsableRecord } from "../src/record.ts";
@@ -149,11 +149,12 @@ function topicWith(overrides: Partial<QueueTopic> = {}): QueueTopic {
   };
 }
 
-const aPost = (postText: string, missing: string[] = []) => ({
+const aPost = (postText: string, missing: string[] = [], extra: Partial<RecentPost> = {}): RecentPost => ({
   author: "someone",
   postText,
   missing,
-  createdAt: ""
+  createdAt: "",
+  ...extra
 });
 
 check("a first question quotes the post it came from", () => {
@@ -263,27 +264,76 @@ check("a post is excerpted to the part that carries its subject", () => {
   assert.equal(postExcerpt("  a\n\nb  "), "a b");
 });
 
-check("the message above the question links to the post it is about", () => {
-  // The operator's own ask: a word they can tap, above the prompt, that opens the
-  // post — because a quote inside a monospace block cannot be opened, and "what is
-  // this actually about" is the question they ask every time.
+check("the message above the question is a short link, not a second copy of the post", () => {
   const header = buildAskHeader(
     topicWith({
       recentPosts: [
-        {
-          author: "AstroPolo",
-          postText: "Can Elon save Grok 4.8 with the new in house C++ stack",
-          postUrl: "https://x.com/i/status/1234567890",
-          createdAt: ""
-        }
+        aPost("Can Elon save Grok 4.8 with the new in house C++ stack", [], {
+          postUrl: "https://x.com/i/status/1234567890"
+        })
       ]
     }),
     "no lore yet",
     "2 posts without an answer"
   );
   assert.ok(header.includes('href="https://x.com/i/status/1234567890"'), "the post has to be linked");
-  assert.ok(header.includes("@AstroPolo"), "and named");
-  assert.ok(header.includes("Grok 4.8"), "and quoted, so the link says what it opens");
+  assert.ok(header.includes(">post link<"), "and the link says what it is");
+  assert.ok(!header.includes("Grok 4.8"), "the question below already quotes the post");
+  assert.ok(header.includes("Coinbase"), "the subject is still named above it");
+});
+
+check("several posts get several numbered links", () => {
+  const header = buildAskHeader(
+    topicWith({
+      recentPosts: [
+        aPost("first", [], { postUrl: "https://x.com/i/status/1" }),
+        aPost("second", [], { postUrl: "https://x.com/i/status/2" })
+      ]
+    }),
+    "no lore yet",
+    "2 posts"
+  );
+  assert.ok(header.includes(">post link 1<"), header);
+  assert.ok(header.includes(">post link 2<"));
+});
+
+check("a record that has gone old says so, at the top", () => {
+  // Asked for by name: a prompt about a subject already answered should read as
+  // "this needs updating", not as the same question again.
+  const header = buildAskHeader(
+    topicWith({ reason: "stale", knownSummary: "An L2." }),
+    "the record is out of date",
+    "3 posts"
+  );
+  assert.ok(header.startsWith("<b>new data update</b>"), header.split("\n")[0]);
+});
+
+check("a brand new topic does not claim to be an update", () => {
+  const header = buildAskHeader(
+    topicWith({ recentPosts: [aPost("a post", [], { postUrl: "https://x.com/i/status/1" })] }),
+    "no lore yet",
+    "2 posts"
+  );
+  assert.ok(!header.includes("new data update"));
+});
+
+check("nothing from a post can escape the link", () => {
+  const header = buildAskHeader(
+    topicWith({
+      recentPosts: [
+        aPost("<b>bold</b> & <script>x</script>", [], {
+          author: 'a"><b>x</b>',
+          postUrl: "https://x.com/i/status/1"
+        })
+      ]
+    }),
+    "no lore yet",
+    "2 posts"
+  );
+  assert.ok(!header.includes("<b>bold"), "no post markup may survive");
+  assert.ok(!header.includes("<script>"));
+  assert.equal((header.match(/<a href=/g) ?? []).length, 1, "exactly one link");
+  assert.ok(header.includes('href="https://x.com/i/status/1"'));
 });
 
 check("a link that is not a post on X is never emitted", () => {
@@ -316,15 +366,15 @@ check("post text cannot inject markup into the header", () => {
   const header = buildAskHeader(
     topicWith({
       recentPosts: [
-        { author: "a<b>", postText: "<b>bold</b> & <script>x</script>", postUrl: "https://x.com/i/status/1", createdAt: "" }
+        aPost("<b>bold</b> & <script>x</script>", [], { author: "a<b>", postUrl: "https://x.com/i/status/1" })
       ]
     }),
     "no lore yet",
     "2 posts"
   );
-  assert.ok(!header.includes("<b>"), "the post's own markup must be escaped");
-  assert.ok(header.includes("&lt;b&gt;"));
-  assert.ok(header.includes("&amp;"));
+  assert.ok(!header.includes("<b>bold"), "no post markup may survive");
+  assert.ok(!header.includes("<script>"));
+  assert.equal((header.match(/<a href=/g) ?? []).length, 1, "exactly one link");
 });
 
 check("a header with nothing to link still reads as one", () => {
@@ -332,6 +382,45 @@ check("a header with nothing to link still reads as one", () => {
   assert.ok(!header.includes("<a href"), "no empty link list");
   assert.ok(header.includes("Coinbase"));
   assert.ok(header.includes("Copy the question below"));
+});
+
+// ── What justifies a question ────────────────────────────────────────────────
+
+check("a post arriving is what justifies a question", () => {
+  const now = Date.parse("2026-10-18T12:00:00Z");
+  const topic = topicWith({ recentPosts: [aPost("a post about it", [], { createdAt: "2026-10-18 11:00:00" })] });
+
+  // Never asked: the first question is caused by the post that raised the topic.
+  assert.ok(justifiedBy(topic, null, now), "a first question is caused by the post");
+  // Asked after that post: nothing new since, so the same thing is not asked twice.
+  assert.equal(justifiedBy(topic, Date.parse("2026-10-18T11:30:00Z"), now), null, "one post, one question");
+  // A post newer than our last question does justify another.
+  assert.ok(justifiedBy(topic, Date.parse("2026-10-18T10:00:00Z"), now), "a newer post does");
+});
+
+check("a cold record with no post behind it justifies nothing", () => {
+  // The reported bug, exactly: the same three questions two hours apart, days after
+  // they had been answered, because a stale record alone was treated as a cause.
+  assert.equal(justifiedBy(topicWith({ knownSummary: "An L2." }), null, Date.now()), null);
+  assert.equal(justifiedBy(topicWith({ recentPosts: [] }), null, Date.now()), null);
+  assert.equal(justifiedBy(topicWith(), null, Date.now()), null);
+});
+
+check("a post's time is read as UTC, in either shape", () => {
+  assert.equal(postTimeMs("2026-10-18 11:00:00"), Date.parse("2026-10-18T11:00:00Z"));
+  assert.equal(postTimeMs("2026-10-18T11:00:00Z"), Date.parse("2026-10-18T11:00:00Z"));
+  assert.equal(postTimeMs(""), 0);
+  assert.equal(postTimeMs("not a date"), 0);
+});
+
+check("a refusal says which rule refused it", () => {
+  // Kept apart because they want different log lines and different fixes.
+  assert.equal(refusalReason({ key: "name-git", entityType: null }), "nothing-to-say");
+  assert.equal(
+    refusalReason({ key: "x-arpit_bhayani", entityType: null, recentPosts: [aPost("a post")] }),
+    "an-account"
+  );
+  assert.equal(refusalReason({ key: "name-grok", entityType: null, recentPosts: [aPost("a post")] }), null);
 });
 
 // ── Pulling JSON out of whatever the model actually said ─────────────────────

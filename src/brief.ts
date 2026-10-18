@@ -191,33 +191,37 @@ export function buildBrief(topic: QueueTopic): string {
 }
 
 /**
- * The message above the question, with the posts as tappable links.
+ * The message above the question.
  *
- * The operator asked for this and it is the difference between a question they can
- * judge and one they have to take on faith: the prompt quotes the post, but a quote
- * in a monospace block cannot be opened, and "what is this actually about" is the
- * question they ask every time. Each line is one anchor, so tapping any of it opens
- * the post itself.
+ * Two things the operator asked for by name.
  *
- * Returns Telegram HTML, and the caller must send it with `rawHtml` rather than
- * letting it be escaped. Only `isStatusUrl` links are emitted, and every piece of
- * post text is escaped before it goes inside the tag.
+ * A short tappable link. The anchor says `post link` — not the post's text, which is
+ * already quoted in the question below and does not need saying twice. One link per
+ * post, numbered when there is more than one, in the same order the question quotes
+ * them.
+ *
+ * And a label when the record has gone old: `new data update` at the top, so a
+ * prompt about a subject they have already answered reads as "this needs updating"
+ * rather than as the same question again.
+ *
+ * Returns Telegram HTML, and the caller must send it with `rawHtml`. Only
+ * `isStatusUrl` links are emitted.
  */
 export function buildAskHeader(topic: QueueTopic, why: string, count: string): string {
-  const lines = [`${topicTitle(topic)} — ${why}, ${count}.`];
+  const lines: string[] = [];
 
-  const linked = (topic.recentPosts ?? [])
+  if (topic.reason === "stale") lines.push("<b>new data update</b>");
+  lines.push(`${topicTitle(topic)} — ${why}, ${count}.`);
+
+  const links = (topic.recentPosts ?? [])
     .slice(0, 3)
-    .map((post) => ({ post, url: (post.postUrl ?? "").trim() }))
-    .filter((entry) => isStatusUrl(entry.url));
+    .map((post) => (post.postUrl ?? "").trim())
+    .filter(isStatusUrl);
 
-  if (linked.length) {
-    lines.push("");
-    lines.push(linked.length === 1 ? "Jei post ta dekhe jante chai:" : "Jei post gulo dekhe jante chai:");
-    linked.forEach((entry, index) => {
-      const who = entry.post.author ? `@${entry.post.author.replace(/^@/, "")} — ` : "";
-      const label = `${index + 1}. ${who}${postExcerpt(entry.post.postText, 90)}`;
-      lines.push(`<a href="${entry.url}">${toHtml(label)}</a>`);
+  if (links.length) {
+    lines.push("", "Jei post dekhe jante chai:");
+    links.forEach((url, index) => {
+      lines.push(`<a href="${url}">${links.length === 1 ? "post link" : `post link ${index + 1}`}</a>`);
     });
   }
 

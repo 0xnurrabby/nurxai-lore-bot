@@ -3,7 +3,7 @@ import { log, warn } from "./config.ts";
 import type { Telegram, TelegramMessage } from "./telegram.ts";
 import { describeSender, noteIgnored } from "./telegram.ts";
 import type { NurxaiClient, QueueTopic } from "./nurxai.ts";
-import { isAskableTopic, isSetupError, preferWithPosts } from "./nurxai.ts";
+import { isAskableTopic, isSetupError, justifiedBy, preferWithPosts, refusalReason } from "./nurxai.ts";
 import { buildAskHeader, buildBrief, topicTitle } from "./brief.ts";
 import { parseDocument } from "./claude.ts";
 import { writeQuestion } from "./question.ts";
@@ -83,6 +83,8 @@ export class LoreBot {
   private controller = new AbortController();
   private timer: NodeJS.Timeout | null = null;
   private collecting: Collecting | null = null;
+  /** The last set of refused topics we logged, so the poll does not repeat itself. */
+  private lastRefusalSignature = "";
 
   constructor(
     private readonly config: Config,
@@ -302,12 +304,20 @@ export class LoreBot {
 
     const waiting = result.data.topics.filter((topic) => topic.misses >= this.config.minMisses);
     const askable = waiting.filter(isAskableTopic);
-    const skipped = waiting.filter((topic) => !isAskableTopic(topic));
-    if (skipped.length) {
-      log(
-        `[bot] skipped ${skipped.length} topic(s) that are only an account, not a subject:`,
-        skipped.map((topic) => topic.key).join(", ")
-      );
+    const refused = waiting.filter((topic) => !isAskableTopic(topic));
+
+    // Logged only when the set changes. This runs every three minutes, and a line
+    // per poll that says the same thing is a hundred lines a day of nothing, which is
+    // how a real signal gets missed.
+    if (refused.length) {
+      const accounts = refused.filter((topic) => refusalReason(topic) === "an-account").map((topic) => topic.key);
+      const empty = refused.filter((topic) => refusalReason(topic) === "nothing-to-say").map((topic) => topic.key);
+      const signature = `${accounts.join(",")}|${empty.join(",")}`;
+      if (signature !== this.lastRefusalSignature) {
+        this.lastRefusalSignature = signature;
+        if (accounts.length) log(`[bot] not asking about ${accounts.length} account(s), not subject(s):`, accounts.join(", "));
+        if (empty.length) log(`[bot] not asking about ${empty.length} topic(s) with nothing to say:`, empty.join(", "));
+      }
     }
     return askable;
   }
@@ -347,15 +357,39 @@ export class LoreBot {
 
     const topics = await this.fetchQueue(to);
     if (!topics) return;
-    if (!topics.length) {
-      return void this.say("Nothing waiting right now.", to);
+
+    // A prompt must be caused by something the operator did.
+    //
+    // A cold record on its own is not a cause, and treating it as one is what produced
+    // the same three questions, two hours apart, days after they had been answered.
+    // What justifies a question is a post they commented on since we last asked: the
+    // first question is caused by the post that raised the topic, a refresh by a newer
+    // post that suggests the record is behind. Everything else is the bot talking to
+    // itself.
+    const caused: QueueTopic[] = [];
+    for (const topic of topics) {
+      const lastAskedAt = this.state.asked[topic.key]?.at ?? null;
+      const post = justifiedBy(topic, lastAskedAt);
+      if (post) {
+        caused.push(topic);
+        continue;
+      }
+      log(
+        "[bot] not asking",
+        topic.key,
+        lastAskedAt === null ? "— no post of yours brought it up" : "— nothing new since the last question"
+      );
     }
 
-    const chosen = preferWithPosts(
-      topics.filter((topic) => manual || !isOnCooldown(this.state, topic.key, this.config.askCooldownMs))
-    );
+    const ready = manual ? caused : caused.filter((topic) => !isOnCooldown(this.state, topic.key, this.config.askCooldownMs));
+    const chosen = preferWithPosts(ready);
     if (!chosen) {
-      log("[bot] every waiting topic is on cooldown");
+      // Only a human asking gets an answer. The automatic pass runs every three
+      // minutes, and a "nothing waiting" message every three minutes is its own kind
+      // of noise.
+      if (manual) {
+        await this.say("Nothing to ask about right now — no post of yours has raised a topic we have nothing on.", to);
+      }
       return;
     }
 

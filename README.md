@@ -296,6 +296,18 @@ path already writes, so "this topic matters" is measured from posts that actuall
 happened rather than guessed from a list. A topic needs at least two posts
 (`LORE_MIN_MISSES`) before it is worth your time.
 
+**And a prompt must be caused by a post.** This is the rule that was missing, and its
+absence produced the operator's sharpest complaint — "kono karon chara auto amake
+prompt ditei ase", the same three subjects over and over days after they had been
+answered. Being cold is not a cause. `justifiedBy` requires a post commented on since
+the last time that topic was asked about: the first question is caused by the post
+that raised the topic, a refresh by a newer post suggesting the record is behind.
+A stale record with no new post behind it produces nothing, so the bot is silent when
+nothing has happened — which is correct, and is a large change from how it behaved.
+
+Consequence worth knowing: nothing arrives until you generate a comment, and a brand
+new topic needs its **second** post before it is worth a question.
+
 **A question about a person is not asked.** An `x-<handle>` key with no entity
 type means the resolver found nothing to call the subject and fell back to the
 author of the post. That is a stranger, not a topic, and NurXai's own rule is that

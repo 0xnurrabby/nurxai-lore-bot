@@ -67,6 +67,87 @@ export type WriteResponse = {
 export type ApiResult<T> = { ok: true; data: T } | { ok: false; status: number; error: string };
 
 /**
+ * When a post arrived, in epoch milliseconds.
+ *
+ * Two formats have to work: SQLite's `datetime('now')`, which is `YYYY-MM-DD HH:MM:SS`
+ * in UTC with no zone marker, and an ISO string. The first is what post_contexts
+ * writes. Reading it as local time would be wrong by the offset — and a post's age is
+ * now what decides whether a question is justified, so being hours out matters.
+ */
+export function postTimeMs(createdAt: string): number {
+  const raw = (createdAt || "").trim();
+  if (!raw) return 0;
+  const iso = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(raw) ? `${raw.replace(" ", "T")}Z` : raw;
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+/**
+ * Why a topic is not worth asking about at all, or null if it is.
+ *
+ * Two refusals for two different reasons, kept apart because they want different
+ * log lines and different fixes:
+ *
+ *   nothing-to-say — no record and no post. The question could only name the topic
+ *                    ("Acca, Git niye aktu bolo"), which a search engine cannot
+ *                    answer and the operator should not have to read.
+ *   an-account     — a bare `x-<handle>` with no entity type. The resolver found
+ *                    nothing to call the subject and fell back to the author or a
+ *                    mention. That is a person, and NurXai's own rule is that lore is
+ *                    never keyed on one.
+ */
+export type TopicRefusal = "nothing-to-say" | "an-account" | null;
+
+export function refusalReason(
+  topic: Pick<QueueTopic, "key" | "entityType"> & Partial<Pick<QueueTopic, "knownSummary" | "recentPosts">>
+): TopicRefusal {
+  const hasSomething = Boolean((topic.knownSummary ?? "").trim()) || (topic.recentPosts ?? []).length > 0;
+  if (!hasSomething) return "nothing-to-say";
+  if (topic.entityType) return null;
+  return /^x-[a-z0-9_]+$/i.test(topic.key) ? "an-account" : null;
+}
+
+export function isAskableTopic(
+  topic: Pick<QueueTopic, "key" | "entityType"> & Partial<Pick<QueueTopic, "knownSummary" | "recentPosts">>
+): boolean {
+  return refusalReason(topic) === null;
+}
+
+/**
+ * The post that justifies asking about this topic, or null if nothing does.
+ *
+ * A prompt must be caused by something the operator did. A stale record is not a
+ * cause, and treating it as one is exactly what produced the same three questions,
+ * two hours apart, days after they had been answered — "kono karon chara", as the
+ * operator put it. What justifies a question is a post they commented on since we
+ * last asked: the first question is caused by the post that raised the topic, and a
+ * refresh is caused by a newer post that suggests the record is behind.
+ *
+ * A post that arrived before our last question has already had its question. Asking
+ * about it again is the same thing over again, which is the complaint.
+ */
+export function justifiedBy(
+  topic: Pick<QueueTopic, "recentPosts">,
+  lastAskedAt: number | null,
+  now = Date.now()
+): RecentPost | null {
+  const posts = (topic.recentPosts ?? []).filter((post) => postTimeMs(post.createdAt) > 0);
+  if (!posts.length) return null;
+
+  let newest = posts[0]!;
+  for (const post of posts) {
+    if (postTimeMs(post.createdAt) > postTimeMs(newest.createdAt)) newest = post;
+  }
+
+  const arrivedAt = postTimeMs(newest.createdAt);
+  // A post from the future is a clock disagreement, not a cause. Treat it as now:
+  // refusing would go silent forever, and accepting it is what a corrected clock does.
+  if (arrivedAt > now + 60_000) return newest;
+  if (lastAskedAt !== null && arrivedAt <= lastAskedAt) return null;
+  return newest;
+}
+
+/**
  * Whether a topic is worth asking the operator about.
  *
  * Two refusals, for two different reasons.
@@ -86,23 +167,6 @@ export type ApiResult<T> = { ok: true; data: T } | { ok: false; status: number; 
  * key instead, so what is left as a bare handle really is an unresolved post.
  *
  * Guards, not fixes. The scoring that decides the subject lives on the NurXai side.
- */
-export function isAskableTopic(
-  topic: Pick<QueueTopic, "key" | "entityType"> & Partial<Pick<QueueTopic, "knownSummary" | "recentPosts">>
-): boolean {
-  if (!(topic.knownSummary ?? "").trim() && !(topic.recentPosts ?? []).length) return false;
-  if (topic.entityType) return true;
-  return !/^x-[a-z0-9_]+$/i.test(topic.key);
-}
-
-/**
- * Picks the topic to ask about, preferring one we can actually be specific about.
- *
- * A topic with no post on file can only be asked about by name, and a name is not a
- * question — "Acca, Git niye aktu bolo" is what that produces. So a topic carrying a
- * recent angle wins over one that is not, and a bare topic is only used when there is
- * nothing better. That case is real and temporary: post contexts started being
- * written on the day this arrived, so every topic the queue held beforehand is bare.
  */
 export function preferWithPosts(topics: QueueTopic[]): QueueTopic | null {
   return topics.find((topic) => (topic.recentPosts?.length ?? 0) > 0) ?? topics[0] ?? null;
