@@ -3,7 +3,7 @@ import { log, warn } from "./config.ts";
 import type { Telegram, TelegramMessage } from "./telegram.ts";
 import { describeSender, noteIgnored } from "./telegram.ts";
 import type { NurxaiClient, QueueTopic } from "./nurxai.ts";
-import { isAskableTopic, isSetupError, justifiedBy, preferWithPosts, refusalReason } from "./nurxai.ts";
+import { isAskableTopic, isGenericLabel, isSetupError, justifiedBy, preferWithPosts, refusalReason } from "./nurxai.ts";
 import { buildAskHeader, buildBrief, topicTitle } from "./brief.ts";
 import { parseDocument } from "./claude.ts";
 import { writeQuestion } from "./question.ts";
@@ -335,12 +335,14 @@ export class LoreBot {
       const accounts = refused.filter((topic) => refusalReason(topic) === "an-account").map((topic) => topic.key);
       const empty = refused.filter((topic) => refusalReason(topic) === "nothing-to-say").map((topic) => topic.key);
       const addressed = refused.filter((topic) => refusalReason(topic) === "an-address").map((topic) => topic.key);
-      const signature = `${accounts.join(",")}|${empty.join(",")}|${addressed.join(",")}`;
+      const generic = refused.filter((topic) => refusalReason(topic) === "not-a-subject").map((topic) => topic.key);
+      const signature = `${accounts.join(",")}|${empty.join(",")}|${addressed.join(",")}|${generic.join(",")}`;
       if (signature !== this.lastRefusalSignature) {
         this.lastRefusalSignature = signature;
         if (accounts.length) log(`[bot] not asking about ${accounts.length} account(s), not subject(s):`, accounts.join(", "));
         if (empty.length) log(`[bot] not asking about ${empty.length} topic(s) with nothing to say:`, empty.join(", "));
         if (addressed.length) log(`[bot] not asking about ${addressed.length} salutation(s), not subject(s):`, addressed.join(", "));
+        if (generic.length) log(`[bot] not asking about ${generic.length} generic phrase(s), not subject(s):`, generic.join(", "));
       }
     }
     return askable;
@@ -550,6 +552,17 @@ export class LoreBot {
     reason: "no_lore" | "stale",
     label: string
   ): Promise<boolean> {
+    // A brief that was already sent can still be answered. If it was built around a
+    // phrase like "Plan B", the answer is not lore about a company, and filing it
+    // would poison the record the reply writer reads. Refuse it here too.
+    if (isGenericLabel(label, key)) {
+      await this.say(
+        `That brief is about "${label}", which is a phrase from a post, not a company or project. There is nothing to research. Send /skip to drop it.`,
+        to
+      );
+      return false;
+    }
+
     await this.telegram.typing(to);
     const outcome = await parseDocument(this.config, document, { key, label });
     if (!outcome.ok) {

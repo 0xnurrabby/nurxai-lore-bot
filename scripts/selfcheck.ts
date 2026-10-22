@@ -139,6 +139,21 @@ check("a topic is asked about only with something to say and something to call i
     false
   );
 
+  // A capitalised common phrase is not a company. "Plan B is farming when AI takes
+  // over our jobs" produced a research question about Plan B's tokenomics.
+  assert.equal(
+    isAskableTopic({ key: "name-plan-b", label: "Plan B", entityType: "other", recentPosts: post }),
+    false
+  );
+  assert.equal(
+    isAskableTopic({ key: "name-quality", label: "Quality", entityType: null, recentPosts: post }),
+    false
+  );
+  assert.equal(
+    isAskableTopic({ key: "name-vibe", label: "Vibe", entityType: null, knownSummary: record }),
+    false
+  );
+
   // Something to say, but the name is a person's handle — the first live prompt was
   // "Arpit Bhayani" because the resolver fell back to the author of the post.
   assert.equal(isAskableTopic({ key: "x-arpit_bhayani", entityType: null, recentPosts: post }), false);

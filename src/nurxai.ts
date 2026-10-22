@@ -99,7 +99,23 @@ export function postTimeMs(createdAt: string): number {
  *                    products is not a company, and asking a search engine what it
  *                    is produces a question the operator can only be embarrassed by.
  */
-export type TopicRefusal = "nothing-to-say" | "an-account" | "an-address" | null;
+export type TopicRefusal = "nothing-to-say" | "an-account" | "an-address" | "not-a-subject" | null;
+
+/**
+ * A common phrase is not a subject.
+ *
+ * "Plan B is farming when AI takes over our jobs" is a joke. The extractor turned
+ * "Plan B" into a name because both words are capitalised, and the bot then asked
+ * for its tokenomics, founder and supply. The same thing happens to "Quality or
+ * quantity", "Vibe coders" and "Authentication vs authorization": the first
+ * capitalised word is the topic of a sentence, not a company.
+ */
+const GENERIC_SUBJECT = /^(plan(\s+[a-z0-9]{1,3})?|quality|vibes?|authentication|authorization|everyone|breaking|news|update|ai|crypto|token|project|protocol|roadmap|market|trading|gm|gn)$/i;
+
+export function isGenericLabel(label: string, key: string): boolean {
+  const fromKey = key.replace(/^(?:name|narr|topic|org|co|person|token|x|site)-/, "").replace(/[-_]+/g, " ").trim();
+  return GENERIC_SUBJECT.test(label.trim()) || GENERIC_SUBJECT.test(fromKey);
+}
 
 /**
  * A salutation is not a subject.
@@ -111,7 +127,7 @@ export type TopicRefusal = "nothing-to-say" | "an-account" | "an-address" | null
  * operator's chat.
  */
 export function isAddressedLabel(label: string, key: string): boolean {
-  const fromKey = key.replace(/^(?:name|narr|topic|org|co|person)-/, "").replace(/[-_]+/g, " ").trim();
+  const fromKey = key.replace(/^(?:name|narr|topic|org|co|person|token|x|site)-/, "").replace(/[-_]+/g, " ").trim();
   return /^(dear|hi|hello|hey|to|attention)\b/i.test(label.trim()) ||
     /^(dear|hi|hello|hey|to|attention)\b/i.test(fromKey);
 }
@@ -123,6 +139,7 @@ export function refusalReason(
   const hasSomething = Boolean((topic.knownSummary ?? "").trim()) || (topic.recentPosts ?? []).length > 0;
   if (!hasSomething) return "nothing-to-say";
   if (isAddressedLabel(topic.label ?? "", topic.key)) return "an-address";
+  if (isGenericLabel(topic.label ?? "", topic.key)) return "not-a-subject";
   if (topic.entityType) return null;
   return /^x-[a-z0-9_]+$/i.test(topic.key) ? "an-account" : null;
 }
