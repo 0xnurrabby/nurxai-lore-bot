@@ -127,6 +127,18 @@ check("a topic is asked about only with something to say and something to call i
   assert.equal(isAskableTopic({ key: "x-base", entityType: "protocol", knownSummary: record }), true);
   assert.equal(isAskableTopic({ key: "token-theo", entityType: "token", recentPosts: post }), true);
 
+  // Something to say, but the name is a salutation. "Dear Claude" is how one open
+  // letter addressed four AI products; asking a search engine whether it is a token
+  // is the failure this guard exists to prevent.
+  assert.equal(
+    isAskableTopic({ key: "name-dear-claude", label: "Dear Claude (other)", entityType: "other", recentPosts: post }),
+    false
+  );
+  assert.equal(
+    isAskableTopic({ key: "name-dear-claude", label: "Dear Claude", entityType: null, knownSummary: record }),
+    false
+  );
+
   // Something to say, but the name is a person's handle — the first live prompt was
   // "Arpit Bhayani" because the resolver fell back to the author of the post.
   assert.equal(isAskableTopic({ key: "x-arpit_bhayani", entityType: null, recentPosts: post }), false);
@@ -229,6 +241,12 @@ check("a question that names its subject is accepted", () => {
     isUsableQuestion("Acca, Coinbase er internal harness er voice agent ta ki? Kivabe kaj kore?", questionSubject),
     true
   );
+});
+
+check("a brief that labels itself Subject: or opens with a greeting is refused", () => {
+  // The failure that produced a research question about "Dear Claude".
+  assert.equal(isUsableQuestion("Subject: Dear Claude. Ki ektai project?", "Dear Claude"), false);
+  assert.equal(isUsableQuestion("Dear Claude, ekhon obostha ki? Team kara?", "Claude"), false);
 });
 
 check("a report with no question mark is refused", () => {

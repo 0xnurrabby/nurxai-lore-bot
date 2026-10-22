@@ -95,20 +95,41 @@ export function postTimeMs(createdAt: string): number {
  *                    nothing to call the subject and fell back to the author or a
  *                    mention. That is a person, and NurXai's own rule is that lore is
  *                    never keyed on one.
+ *   an-address     — "Dear Claude" and the like. A salutation addressed to several
+ *                    products is not a company, and asking a search engine what it
+ *                    is produces a question the operator can only be embarrassed by.
  */
-export type TopicRefusal = "nothing-to-say" | "an-account" | null;
+export type TopicRefusal = "nothing-to-say" | "an-account" | "an-address" | null;
+
+/**
+ * A salutation is not a subject.
+ *
+ * "Dear Claude" is how one post addressed four AI products in an open letter. It is
+ * not a company, a protocol or a token, and a research question built from it can
+ * only ask the operator whether a greeting is a project. Whatever the extractor did
+ * upstream, this is the last place such a topic can be stopped before it reaches the
+ * operator's chat.
+ */
+export function isAddressedLabel(label: string, key: string): boolean {
+  const fromKey = key.replace(/^(?:name|narr|topic|org|co|person)-/, "").replace(/[-_]+/g, " ").trim();
+  return /^(dear|hi|hello|hey|to|attention)\b/i.test(label.trim()) ||
+    /^(dear|hi|hello|hey|to|attention)\b/i.test(fromKey);
+}
 
 export function refusalReason(
-  topic: Pick<QueueTopic, "key" | "entityType"> & Partial<Pick<QueueTopic, "knownSummary" | "recentPosts">>
+  topic: Pick<QueueTopic, "key" | "entityType"> &
+    Partial<Pick<QueueTopic, "label" | "knownSummary" | "recentPosts">>
 ): TopicRefusal {
   const hasSomething = Boolean((topic.knownSummary ?? "").trim()) || (topic.recentPosts ?? []).length > 0;
   if (!hasSomething) return "nothing-to-say";
+  if (isAddressedLabel(topic.label ?? "", topic.key)) return "an-address";
   if (topic.entityType) return null;
   return /^x-[a-z0-9_]+$/i.test(topic.key) ? "an-account" : null;
 }
 
 export function isAskableTopic(
-  topic: Pick<QueueTopic, "key" | "entityType"> & Partial<Pick<QueueTopic, "knownSummary" | "recentPosts">>
+  topic: Pick<QueueTopic, "key" | "entityType"> &
+    Partial<Pick<QueueTopic, "label" | "knownSummary" | "recentPosts">>
 ): boolean {
   return refusalReason(topic) === null;
 }

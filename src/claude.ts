@@ -65,6 +65,17 @@ RULES
 - citations: only URLs that appear in the document. Never construct one. If there are none, use [].
 - If the document does not identify a single clear subject, or carries no usable summary, set "ambiguous": true and leave the rest empty. That is the correct answer for a bad paste — it is not a failure.
 
+THE OPERATOR'S SUBJECT
+The document may be preceded by "FILING AGAINST: <name> (<key>)". That is the
+subject the operator believes they are filing. If the document is about that
+subject, or about its product family (a model, a tier, a sibling release), use
+that name as canonicalName even when other companies or models are mentioned.
+Several entities in one answer is not ambiguity. Mark the document ambiguous only
+when it has no main subject at all, not when it has more than one.
+A correction can be short and still clear: if it names the product and corrects
+one fact, that is a valid record, and the fields it does not mention stay as they
+are on NurXai's side.
+
 SCHEMA
 ${SCHEMA}`;
 
@@ -322,7 +333,11 @@ async function callGateway(
   }
 }
 
-export async function parseDocument(config: Config, document: string): Promise<ParseOutcome> {
+export async function parseDocument(
+  config: Config,
+  document: string,
+  subject?: { key: string; label: string }
+): Promise<ParseOutcome> {
   const trimmed = document.trim();
   if (trimmed.length < 40) {
     return { ok: false, reason: "that paste is too short to hold anything — send the whole answer" };
@@ -330,11 +345,14 @@ export async function parseDocument(config: Config, document: string): Promise<P
 
   const truncated = trimmed.length > DOC_LIMIT;
   const payload = truncated ? trimmed.slice(0, DOC_LIMIT) : trimmed;
+  const anchor = subject?.label?.trim()
+    ? `FILING AGAINST: ${subject.label.trim()} (${subject.key.trim()})\n\n`
+    : "";
 
   const raw = await callModel(config, {
     label: "parse",
     system: SYSTEM,
-    user: `DOCUMENT\n<<<\n${payload}\n>>>`,
+    user: `${anchor}DOCUMENT\n<<<\n${payload}\n>>>`,
     maxTokens: 3000
   });
   if (raw === null) return { ok: false, reason: "the parser model could not be reached" };

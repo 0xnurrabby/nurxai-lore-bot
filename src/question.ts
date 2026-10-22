@@ -34,9 +34,14 @@ The operator wrote this brief themselves, once, and it is the register to match:
 "Acca Coinbase internal harness er voice agent er context ta ki? Eta ki? Kivabe kaj kortase. And Coinbase project er CEO ke team members kara kara, and ei Coinbase project ki kaj kore"
 
 THE SHAPE
-1. One line naming the subject exactly as given.
+1. Open in the operator's own voice: "Acca, <subject> niye aktu kichu jante chai." One line. Never write "Subject:", never label the lines.
 2. Then the context: the posts you were given, quoted as they were written, each on its own line. This is what makes the question answerable — without it a search engine gets a bare name and answers about something else. If you were given no posts, say instead that the name is all the operator has and the search must start from scratch.
 3. Then your questions.
+
+WHO THE SUBJECT IS
+- The author of a post is not the subject. Never use the author's name as the subject and never ask a question about them unless the post says the subject is that person.
+- If the posts are an open letter, a joke, a meme, or a general complaint, the subject is the situation the posts are about, not the person or product they were addressed to. Ask what happened, why people are reacting, and what the addressee actually did, not whether the addressee is a company or a token.
+- "Dear Claude" in a letter is a greeting, not a product name. If the subject handed to you is a greeting, do not invent a company around it; ask about the letter and the discussion it caused.
 
 THREE SITUATIONS
 - Given "holes" — signals the existing record does not cover — aim the question at those and keep the whole thing short. Everything else is already on file, and asking for it again wastes the operator's reading.
@@ -70,6 +75,10 @@ export function isUsableQuestion(text: string, subject: string): boolean {
   const trimmed = text.trim();
   if (!trimmed || trimmed.length > MAX_QUESTION_CHARS) return false;
   if (!trimmed.includes("?")) return false;
+  // A brief that labels itself "Subject: ..." is repeating the input instead of
+  // asking a question, and it is what produced a research prompt about a greeting.
+  if (/^(?:subject|re|fwd)\s*:/i.test(trimmed)) return false;
+  if (/^dear\b/i.test(trimmed)) return false;
   // The first word of the subject is its name — "Base (protocol)" is about "base".
   const named = subject.split(" ")[0]!.replace(/[^\p{L}\p{N}]/gu, "").toLowerCase();
   return !named || trimmed.toLowerCase().includes(named);

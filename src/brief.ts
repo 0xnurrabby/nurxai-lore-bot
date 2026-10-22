@@ -51,6 +51,17 @@ export function topicTitle(topic: QueueTopic): string {
 }
 
 /**
+ * A salutation is never a research subject.
+ *
+ * The queue guard refuses these before a question is written. This is the second
+ * lock, for the template path: if a "Dear ..." topic ever reaches a brief, the
+ * question is about the post, not about the greeting.
+ */
+function safeSubject(subject: string): string {
+  return /^(dear|hi|hello|hey|to|attention)\b/i.test(subject.trim()) ? "ei post" : subject;
+}
+
+/**
  * One post, flattened to the part that carries its subject.
  *
  * Capped hard. The operator is going to read this inside a chat bubble and the
@@ -180,7 +191,7 @@ function firstShape(subject: string, context: string | null): string {
 }
 
 export function buildBrief(topic: QueueTopic): string {
-  const subject = topicTitle(topic);
+  const subject = safeSubject(topicTitle(topic));
   const context = contextBlock(topic);
   const missing = missingSignals(topic);
   const known = (topic.knownSummary || "").trim();
@@ -232,10 +243,10 @@ export function buildAskHeader(topic: QueueTopic, why: string, count: string): s
 }
 
 export function buildFreshBrief(topic: QueueTopic): string {
-  return firstShape(topicTitle(topic), contextBlock(topic));
+  return firstShape(safeSubject(topicTitle(topic)), contextBlock(topic));
 }
 
 export function buildRefreshBrief(topic: QueueTopic): string {
   const known = (topic.knownSummary || "").trim() || "(age kichu nei)";
-  return refreshShape(topicTitle(topic), known, contextBlock(topic));
+  return refreshShape(safeSubject(topicTitle(topic)), known, contextBlock(topic));
 }

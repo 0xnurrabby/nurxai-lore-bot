@@ -334,11 +334,13 @@ export class LoreBot {
     if (refused.length) {
       const accounts = refused.filter((topic) => refusalReason(topic) === "an-account").map((topic) => topic.key);
       const empty = refused.filter((topic) => refusalReason(topic) === "nothing-to-say").map((topic) => topic.key);
-      const signature = `${accounts.join(",")}|${empty.join(",")}`;
+      const addressed = refused.filter((topic) => refusalReason(topic) === "an-address").map((topic) => topic.key);
+      const signature = `${accounts.join(",")}|${empty.join(",")}|${addressed.join(",")}`;
       if (signature !== this.lastRefusalSignature) {
         this.lastRefusalSignature = signature;
         if (accounts.length) log(`[bot] not asking about ${accounts.length} account(s), not subject(s):`, accounts.join(", "));
         if (empty.length) log(`[bot] not asking about ${empty.length} topic(s) with nothing to say:`, empty.join(", "));
+        if (addressed.length) log(`[bot] not asking about ${addressed.length} salutation(s), not subject(s):`, addressed.join(", "));
       }
     }
     return askable;
@@ -518,7 +520,7 @@ export class LoreBot {
       );
     }
 
-    const filed = await this.file(paste.body, paste.chat, paste.key, paste.reason);
+    const filed = await this.file(paste.body, paste.chat, paste.key, paste.reason, paste.label);
     if (filed) {
       // Only now is it safe to forget: a failed parse or a refused write has to
       // leave the document somewhere, or the operator's paste is gone.
@@ -541,11 +543,22 @@ export class LoreBot {
   }
 
   /** Files one document against one topic. Returns whether it landed. */
-  private async file(document: string, to: number, key: string, reason: "no_lore" | "stale"): Promise<boolean> {
+  private async file(
+    document: string,
+    to: number,
+    key: string,
+    reason: "no_lore" | "stale",
+    label: string
+  ): Promise<boolean> {
     await this.telegram.typing(to);
-    const outcome = await parseDocument(this.config, document);
+    const outcome = await parseDocument(this.config, document, { key, label });
     if (!outcome.ok) {
-      await this.say(`Could not use that: ${outcome.reason}.`, to);
+      // A half paste and a correction are the two common failures, and neither is
+      // helped by the parser's internal wording. Say what to do next instead.
+      const hint = /clear subject/i.test(outcome.reason)
+        ? "\n\nThat usually means the paste was half an answer, or a correction that never named the product. If there is more, send the rest now. If that was all of it, start with the subject's name and paste again."
+        : "";
+      await this.say(`Could not use that: ${outcome.reason}.${hint}`, to);
       return false;
     }
 
